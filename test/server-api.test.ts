@@ -14,6 +14,7 @@ const CONFIG: ServerConfig = {
   model: 'anthropic/claude-haiku-4.5',
   provider: 'openrouter',
   transcribeModel: 'openai/gpt-4o-mini-transcribe',
+  realtimeStt: false,
   sonioxApiKey: 'soniox-long-lived',
   openRouterApiKey: 'openrouter-long-lived',
 };
@@ -81,6 +82,7 @@ test('config comes from the environment with defaults and never exposes keys', a
     sonioxApiKey: undefined,
     openRouterApiKey: undefined,
     openAiApiKey: undefined,
+    realtimeStt: false,
   });
   const config = readConfig({
     PRACTICE_LANGUAGE: 'es',
@@ -111,7 +113,8 @@ test('the provider is OpenRouter when its key is set, else OpenAI with OpenAI mo
   const openAi = readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'anthropic/claude-haiku-4.5', TRANSCRIBE_MODEL: 'openai/gpt-4o-mini-transcribe' });
   assert.equal(openAi.provider, 'openai');
   assert.equal(openAi.model, 'gpt-4.1-mini');
-  assert.equal(openAi.transcribeModel, 'gpt-4o-mini-transcribe');
+  // The OpenRouter slug is ignored; the OpenAI default applies (gpt-4o-transcribe since 15:00).
+  assert.equal(openAi.transcribeModel, 'gpt-4o-transcribe');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1' }).model, 'gpt-4.1');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1', OPENAI_COACH_MODEL: 'gpt-4o' }).model, 'gpt-4o');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', TRANSCRIBE_MODEL: 'gpt-4o-transcribe' }).transcribeModel, 'gpt-4o-transcribe');
@@ -125,6 +128,8 @@ test('sttMode prefers Soniox streaming, falls back to OpenRouter clips, else non
     [{ sonioxApiKey: undefined }, 'segments'],
     [{ sonioxApiKey: undefined, openRouterApiKey: undefined }, 'none'],
     [{ sonioxApiKey: undefined, openRouterApiKey: undefined, provider: 'openai', openAiApiKey: 'k' }, 'segments'],
+    [{ sonioxApiKey: undefined, realtimeStt: true, openAiApiKey: 'k' }, 'realtime'],
+    [{ sonioxApiKey: undefined, realtimeStt: true }, 'segments'],
   ];
   for (const [override, expected] of cases) {
     const h = await serve({ config: { ...CONFIG, ...override } });
@@ -468,6 +473,71 @@ test('with only an OpenAI key, transcribe posts multipart form data with the pro
     assert.equal(call.form.get('language'), null, 'language must be auto-detected so slips survive');
   } finally {
     await h.close();
+  }
+});
+
+test('realtime-token mints an ephemeral transcription secret from OpenAI', async () => {
+  const calls: { url: string; headers: Record<string, string>; body: any }[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) });
+    return new Response(JSON.stringify({ value: 'ek_abc', expires_at: 1791150000, session: {} }), { status: 200 });
+  }) as typeof fetch;
+  const h = await serve({ config: { ...OPENAI_CONFIG, realtimeStt: true }, fetch: fakeFetch });
+  try {
+    const res = await fetch(`${h.base}/api/realtime-token`);
+    const text = await res.text();
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(text), { apiKey: 'ek_abc', expiresAt: 1791150000, model: 'gpt-live-transcribe', sampleRate: 24000 });
+    assert.ok(!text.includes('openai-long-lived'));
+    const call = calls[0];
+    assert.equal(call.url, 'https://api.openai.com/v1/realtime/client_secrets');
+    assert.equal(call.headers.Authorization, 'Bearer openai-long-lived');
+    assert.deepEqual(call.body.expires_after, { anchor: 'created_at', seconds: 600 });
+    assert.deepEqual(call.body.session, {
+      type: 'transcription',
+      audio: {
+        input: {
+          format: { type: 'audio/pcm', rate: 24000 },
+          transcription: { model: 'gpt-live-transcribe', prompt: HINT, languages: ['fr', 'en'] },
+          turn_detection: null,
+        },
+      },
+    });
+  } finally {
+    await h.close();
+  }
+});
+
+test('realtime-token needs the flag and an OpenAI key, and maps upstream failure to 502', async () => {
+  let called = 0;
+  const ok = (async () => {
+    called++;
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  for (const config of [OPENAI_CONFIG, { ...OPENAI_CONFIG, realtimeStt: true, openAiApiKey: undefined }]) {
+    const h = await serve({ config, fetch: ok });
+    try {
+      assert.equal((await fetch(`${h.base}/api/realtime-token`)).status, 503);
+    } finally {
+      await h.close();
+    }
+  }
+  assert.equal(called, 0);
+  const cases: [Response, RegExp][] = [
+    [new Response(JSON.stringify({ error: { message: 'model not found' } }), { status: 404 }), /OpenAI answered 404: model not found/],
+    [new Response(JSON.stringify({ value: 'ek_x' }), { status: 200 }), /malformed/],
+  ];
+  for (const [reply, pattern] of cases) {
+    const h = await serve({ config: { ...OPENAI_CONFIG, realtimeStt: true }, fetch: (async () => reply) as typeof fetch });
+    try {
+      const res = await fetch(`${h.base}/api/realtime-token`);
+      const text = await res.text();
+      assert.equal(res.status, 502);
+      assert.match(JSON.parse(text).error, pattern);
+      assert.ok(!text.includes('openai-long-lived'));
+    } finally {
+      await h.close();
+    }
   }
 });
 

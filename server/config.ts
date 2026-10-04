@@ -10,6 +10,8 @@ export interface ServerConfig extends Omit<ConfigResponse, 'sttMode'> {
   sonioxApiKey?: string;
   openRouterApiKey?: string;
   openAiApiKey?: string;
+  /** REALTIME_STT=1: stream to OpenAI realtime transcription (spike, pahax-g2x). */
+  realtimeStt: boolean;
 }
 
 export type ProviderAccess = { provider: Exclude<Provider, 'none'>; apiKey: string };
@@ -40,11 +42,14 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
       ? (nonEmpty(env.OPENAI_COACH_MODEL) ?? (isOpenRouterSlug(coachModel) ? undefined : coachModel) ?? 'gpt-4.1-mini')
       : (coachModel ?? 'anthropic/claude-haiku-4.5'),
     transcribeModel: openAi
-      ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-mini-transcribe')
+      // Measured live 14:58 on a 3.6 s French clip: gpt-4o-transcribe 1.3-2.0 s and
+      // accurate; gpt-4o-mini-transcribe 4.4-4.8 s; whisper-1 1.6-1.8 s but mangles fillers.
+      ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-transcribe')
       : (transcribeModel ?? 'openai/gpt-4o-mini-transcribe'),
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
     openRouterApiKey,
     openAiApiKey,
+    realtimeStt: nonEmpty(env.REALTIME_STT) === '1',
   };
 }
 
@@ -69,6 +74,7 @@ export function publicConfig(config: ServerConfig): ConfigResponse {
 /** Soniox streaming wins when both keys are present. */
 export function sttMode(config: ServerConfig): SttMode {
   if (config.sonioxApiKey) return 'soniox';
+  if (config.realtimeStt && config.openAiApiKey) return 'realtime';
   if (providerAccess(config)) return 'segments';
   return 'none';
 }

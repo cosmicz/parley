@@ -11,7 +11,7 @@
 // microphone with an on-page imitation of the HUD: the rehearsal path, and the
 // stage fallback if Bluetooth fails.
 
-import { Glasses } from './glasses.ts';
+import { Glasses, type GlassesHandlers } from './glasses.ts';
 import { DomHud } from './dom-hud.ts';
 import { PauseDetector, pcmBytesToInt16 } from './vad.ts';
 import { Coach, type CoachEffect } from './coach.ts';
@@ -19,6 +19,7 @@ import { formatTranscript, formatSuggestion } from './hud-format.ts';
 import type { SuggestResult } from './suggest-core.ts';
 import { SonioxStream, type SttCallbacks } from './stt-soniox.ts';
 import { SegmentStt } from './stt-segments.ts';
+import { RealtimeStt } from './stt-openai-realtime.ts';
 
 /** The surface main uses; Glasses (G2) and DomHud (laptop) both provide it. */
 type Hud = Pick<Glasses, 'start' | 'setTranscript' | 'setSuggestion' | 'exitWithDialog' | 'stop'>;
@@ -28,7 +29,7 @@ interface Config {
   fallbackLanguage: string;
   model: string;
   /** soniox: streaming words; segments: one OpenRouter clip per utterance. */
-  sttMode: 'soniox' | 'segments' | 'none';
+  sttMode: 'soniox' | 'segments' | 'realtime' | 'none';
 }
 
 /** The speech-to-text surface main uses; flush exists only in clip mode. */
@@ -68,19 +69,56 @@ function waitForClick(button: HTMLElement): Promise<void> {
   });
 }
 
+// The SDK resolves a bridge even in a plain browser, where page creation then
+// answers 'invalid' (operator report 15:08). So try the G2 and fall back to the
+// laptop microphone with the on-page HUD whenever the G2 page cannot start.
+async function startHud(glasses: Glasses | null, handlers: GlassesHandlers): Promise<Hud> {
+  if (glasses) {
+    try {
+      await glasses.start(handlers);
+      log('HUD on the G2, glasses microphone open');
+      return glasses;
+    } catch (err) {
+      // Not awaiting glasses.stop(): without the Even app its calls may never settle.
+      log(`G2 HUD unavailable (${String(err)}): using the laptop microphone and on-page HUD`);
+    }
+  } else {
+    log('No Even bridge: using the laptop microphone and on-page HUD');
+  }
+  const dom = new DomHud(el('hud'));
+  // Browsers start audio only after a user gesture.
+  await waitForClick(el('start'));
+  await dom.start(handlers);
+  return dom;
+}
+
 async function main(): Promise<void> {
   const config = await getJson<Config>('/api/config');
   el('languages').textContent = `${config.practiceLanguage} practice, ${config.fallbackLanguage} fallback`;
 
   const glasses = await Glasses.connect();
-  const hud: Hud = glasses ?? new DomHud(el('hud'));
-  log(glasses ? 'Even bridge found: using the G2' : 'No Even bridge: laptop microphone and on-page HUD');
-  // Browsers start audio only after a user gesture, so the laptop path waits
-  // for a click before opening the microphone.
-  if (!glasses) await waitForClick(el('start'));
+  // Forwarding HUD: the real one is chosen when it starts (see startHud).
+  let active: Hud | null = null;
+  const hud: Hud = {
+    start: async (handlers) => {
+      active = await startHud(glasses, handlers);
+    },
+    setTranscript: (text) => active?.setTranscript(text),
+    setSuggestion: async (text) => {
+      await active?.setSuggestion(text);
+    },
+    exitWithDialog: async () => {
+      await active?.exitWithDialog();
+    },
+    stop: async () => {
+      await active?.stop();
+    },
+  };
 
-  const segmented = config.sttMode === 'segments';
-  if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env.local');
+  // Clip and realtime modes both close an utterance on a pause (flush), and the
+  // coach waits for that utterance's final text before asking.
+  const segmented = config.sttMode === 'segments' || config.sttMode === 'realtime';
+  if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENAI_API_KEY or OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env');
   log(`speech-to-text mode: ${config.sttMode}`);
   const coach = new Coach({ waitForTranscript: segmented });
   const vad = new PauseDetector();
@@ -135,8 +173,18 @@ async function main(): Promise<void> {
       hud.setTranscript(`[speech-to-text] ${err.message}`);
     },
     onState: (state) => log(`speech-to-text ${state}`),
+    // Streaming clients: show provisional words; only onTranscript can trigger.
+    onPartial: (text) => {
+      run(coach.onPartial(text));
+      hud.setTranscript(formatTranscript(text));
+    },
   };
-  const stt: Stt = segmented
+  const stt: Stt = config.sttMode === 'realtime'
+    ? new RealtimeStt(
+        { getToken: async () => getJson<{ apiKey: string; sampleRate: number }>('/api/realtime-token') },
+        callbacks,
+      )
+    : segmented
     ? new SegmentStt(
         {
           transcribe: async (wav) => {
@@ -178,7 +226,6 @@ async function main(): Promise<void> {
       void hud.stop();
     },
   });
-  log('HUD ready, microphone open');
 
   try {
     await stt.start();

@@ -8,7 +8,7 @@ import type { SuggestResult, Trigger } from '../src/suggest-core.ts';
  * How the phone gets a transcript: Soniox streaming, OpenRouter clips of
  * speech segments (POST /api/transcribe), or neither.
  */
-export type SttMode = 'soniox' | 'segments' | 'none';
+export type SttMode = 'soniox' | 'realtime' | 'segments' | 'none';
 
 /** Who serves suggestions and clip transcription: OpenRouter is preferred. */
 export type Provider = 'openrouter' | 'openai' | 'none';
@@ -35,6 +35,15 @@ export interface SttTokenResponse {
 export interface TranscribeResponse {
   text: string;
   sttMs: number;
+}
+
+/** GET /api/realtime-token: an ephemeral OpenAI client secret (ek_...) for one transcription session. */
+export interface RealtimeTokenResponse {
+  apiKey: string;
+  /** Unix seconds. */
+  expiresAt: number;
+  model: string;
+  sampleRate: number;
 }
 
 /** POST /api/suggest request body. */

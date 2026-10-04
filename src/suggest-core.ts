@@ -59,7 +59,9 @@ export function buildSuggestPrompt(input: SuggestInput): SuggestPrompt {
   const system = [
     `You are a discreet ${practice} conversation coach whose words appear on smart glasses.`,
     `The wearer is practising ${practice} and is stronger in ${fallback}. The live transcript may mix in ${fallback} words, fillers such as "um", and speech-recognition errors.`,
-    `Give ONE short ${practice} phrase the wearer could say next: either the natural ${practice} continuation of their sentence, or the ${practice} for the ${fallback} words they just used.`,
+    `Give ONE short ${practice} phrase for the wearer.`,
+    `First priority: if there are ${fallback} words near the end of the transcript, reply with the ${practice} for those words, in the form that fits the sentence (for example the ${practice} noun with its article).`,
+    `Otherwise, give the natural ${practice} continuation of their sentence.`,
     `At most 6 words and ${MAX_SUGGESTION_CHARS} characters. Do not invent names, times, places or reasons the wearer has not said.`,
     `If the transcript gives no basis for a continuation, reply with a neutral ${practice} bridge phrase (in English that would be "Let me put it another way"), or abstain.`,
     `Reply with JSON only: {"suggestion": "..."} or {"abstain": true}.`,

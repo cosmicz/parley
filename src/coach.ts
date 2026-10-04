@@ -59,6 +59,13 @@ export class Coach {
     return [{ type: 'publish' }];
   }
 
+  /** Streaming partial text: shown on the HUD and projector, never a trigger. */
+  onPartial(text: string): CoachEffect[] {
+    this.state.transcript = text;
+    if (this.state.phase === 'idle' && text.trim()) this.state.phase = 'listening';
+    return [{ type: 'publish' }];
+  }
+
   onVad(event: VadEvent, nowMs: number): CoachEffect[] {
     if (event.kind === 'pause') {
       // The pause fires after the silence threshold; date the request from the

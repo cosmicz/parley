@@ -16,6 +16,8 @@ export interface SttOptions {
 
 export interface SttCallbacks {
   onTranscript(text: string): void;
+  /** Streaming clients only: provisional text for display, never a coach trigger. */
+  onPartial?(text: string): void;
   onError(err: { type: string; message: string }): void;
   onState(state: 'connecting' | 'open' | 'closed'): void;
 }
