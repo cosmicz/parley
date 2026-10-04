@@ -78,7 +78,7 @@ test('config comes from the environment with defaults and never exposes keys', a
     fallbackLanguage: 'en',
     provider: 'none',
     model: 'anthropic/claude-haiku-4.5',
-    transcribeModel: 'openai/gpt-4o-mini-transcribe',
+    transcribeModel: 'openai/gpt-4o-transcribe',
     sonioxApiKey: undefined,
     openRouterApiKey: undefined,
     openAiApiKey: undefined,
