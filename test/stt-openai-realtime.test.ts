@@ -123,6 +123,21 @@ test('flush with no new audio sends nothing; a missing final times out with an e
   assert.deepEqual(log.errors, ['flush_timeout']);
 });
 
+test('a flush timeout promotes the turn in progress, and a late final replaces it', async () => {
+  const { stt, log } = harness(50);
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'i1', delta: 'Je voudrais prendre' });
+  const flushed = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  await flushed;
+  assert.deepEqual(log.errors, [], 'no HUD error when there is text to promote');
+  assert.deepEqual(log.transcripts, ['Je voudrais prendre']);
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: 'Je voudrais prendre un rendez-vous' });
+  assert.equal(log.transcripts.at(-1), 'Je voudrais prendre un rendez-vous');
+});
+
 test('events after stop are ignored', async () => {
   const { stt, log } = harness();
   await stt.start();

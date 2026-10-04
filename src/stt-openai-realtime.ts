@@ -17,7 +17,9 @@ import type { SttCallbacks } from './stt-soniox.ts';
 
 export const DEFAULT_URL = 'wss://api.openai.com/v1/realtime';
 const INPUT_RATE = 16_000;
-const DEFAULT_FLUSH_TIMEOUT_MS = 2_500;
+// Live runs 2026-10-04 15:16: the final arrived 0.6-1.0 s after commit, but
+// one run lagged 4.8 s behind the audio and missed a 2.5 s timeout.
+const DEFAULT_FLUSH_TIMEOUT_MS = 4_000;
 
 export interface RealtimeSttOptions {
   /** Fetches GET /api/realtime-token from the app server. */
@@ -120,7 +122,19 @@ export class RealtimeStt {
     if (generation !== this.generation) return;
     if (outcome === 'timeout') {
       this.pendingCommit = null;
-      this.cb.onError({ type: 'flush_timeout', message: `no final transcript within ${timeoutMs} ms` });
+      // Promote the turn in progress so the coach still gets this turn's words;
+      // a late completed event replaces it. Only report an error when there is
+      // nothing to promote, since main.ts shows errors on the HUD.
+      if (this.partials.size > 0) {
+        for (const [id, partial] of this.partials) {
+          if (!this.order.includes(id)) this.order.push(id);
+          this.finals.set(id, partial.trim());
+        }
+        this.partials.clear();
+        this.cb.onTranscript(this.text(false));
+      } else {
+        this.cb.onError({ type: 'flush_timeout', message: `no final transcript within ${timeoutMs} ms` });
+      }
     }
   }
 
