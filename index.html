@@ -5,25 +5,61 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Parley</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
-      h1 { font-size: 20px; margin: 0 0 4px; }
-      .muted { color: #999; font-size: 13px; }
-      .box { border: 1px solid #333; border-radius: 6px; padding: 8px; margin: 10px 0; min-height: 1.4em; }
-      #suggestion { border-color: #6c6; color: #9f9; }
-      #start { font: inherit; font-size: 18px; padding: 10px 18px; margin: 10px 0; }
-      #log { font-family: ui-monospace, monospace; font-size: 12px; color: #aaa; max-height: 40vh; overflow: auto; }
+      :root { color-scheme: dark; }
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #0d1117; color: #e6edf3; }
+      main { max-width: 760px; margin: 0 auto; display: grid; gap: 14px; }
+      header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
+      .muted { color: #8b949e; font-size: 14px; }
+      .help { margin: 0; color: #c9d1d9; font-size: 15px; line-height: 1.45; }
+      .help kbd { background: #21262d; border: 1px solid #30363d; border-radius: 4px; padding: 0 5px; font-size: 13px; }
+      #start { font: inherit; font-size: 20px; font-weight: 600; padding: 14px 22px; border-radius: 10px; border: 0; background: #2ea043; color: #fff; cursor: pointer; justify-self: start; }
+      #start[hidden] { display: none; }
+      #status { font-size: 20px; font-weight: 600; padding: 12px 16px; border-radius: 10px; background: #161b22; border-left: 6px solid #8b949e; }
+      #status[data-stage="listening"] { border-color: #2ea043; }
+      #status[data-stage="transcribing"], #status[data-stage="thinking"] { border-color: #d29922; color: #f2cc60; }
+      #status[data-stage="hint"] { border-color: #58a6ff; color: #a5d6ff; }
+      #status[data-stage="error"] { border-color: #f85149; color: #ffa198; }
+      .panel { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 16px; }
+      .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: #8b949e; margin-bottom: 6px; }
+      #suggestion { font-size: 34px; font-weight: 700; color: #7ee787; min-height: 1.3em; line-height: 1.25; }
+      #suggestion:empty::before { content: 'Pause after speaking to get a hint'; font-size: 16px; font-weight: 400; color: #6e7681; }
+      #transcript { font-size: 18px; line-height: 1.45; min-height: 1.4em; }
+      #transcript:empty::before { content: 'Nothing heard yet'; color: #6e7681; }
+      #timings { font-variant-numeric: tabular-nums; }
+      details summary { cursor: pointer; color: #8b949e; font-size: 13px; }
+      #log { font-family: ui-monospace, monospace; font-size: 12px; color: #8b949e; max-height: 30vh; overflow: auto; margin-top: 6px; }
     </style>
   </head>
   <body>
-    <h1>Parley</h1>
-    <div class="muted"><span id="languages"></span> &middot; phase: <span id="phase">idle</span></div>
-    <button id="start" type="button" hidden>Start microphone</button>
-    <div id="hud"></div>
-    <div class="muted">Transcript</div>
-    <div id="transcript" class="box"></div>
-    <div class="muted">Suggestion</div>
-    <div id="suggestion" class="box"></div>
-    <div id="log"></div>
+    <main>
+      <header>
+        <h1>Parley</h1>
+        <span class="muted" id="languages"></span>
+      </header>
+      <p class="help">
+        Speak French. When you get stuck, slip into English or say "euh", then
+        <strong>pause about one second</strong>: the hint appears below and on
+        the glasses. Keep talking to clear it. Press <kbd>Space</kbd> (or tap the
+        glasses) for a hint right away.
+      </p>
+      <button id="start" type="button" hidden>Start microphone</button>
+      <div id="status" data-stage="starting" aria-live="polite">Starting…</div>
+      <section class="panel" aria-labelledby="say-label">
+        <div class="label" id="say-label">Say</div>
+        <div id="suggestion" aria-live="polite"></div>
+      </section>
+      <div id="hud"></div>
+      <section class="panel" aria-labelledby="heard-label">
+        <div class="label" id="heard-label">You said</div>
+        <div id="transcript"></div>
+      </section>
+      <div id="timings" class="muted"></div>
+      <details>
+        <summary>Debug log</summary>
+        <div id="log"></div>
+      </details>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

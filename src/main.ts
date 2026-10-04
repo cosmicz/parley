@@ -16,7 +16,8 @@ import { DomHud } from './dom-hud.ts';
 import { PauseDetector, pcmBytesToInt16 } from './vad.ts';
 import { Coach, type CoachEffect } from './coach.ts';
 import { formatTranscript, formatSuggestion } from './hud-format.ts';
-import type { SuggestResult } from './suggest-core.ts';
+import { languageName, type SuggestResult } from './suggest-core.ts';
+import { describeStatus, type Stage } from './status.ts';
 import { SonioxStream, type SttCallbacks } from './stt-soniox.ts';
 import { SegmentStt } from './stt-segments.ts';
 import { RealtimeStt } from './stt-openai-realtime.ts';
@@ -87,6 +88,7 @@ async function startHud(glasses: Glasses | null, handlers: GlassesHandlers): Pro
   }
   const dom = new DomHud(el('hud'));
   // Browsers start audio only after a user gesture.
+  el('status').textContent = 'Click "Start microphone" and allow microphone access';
   await waitForClick(el('start'));
   await dom.start(handlers);
   return dom;
@@ -122,12 +124,31 @@ async function main(): Promise<void> {
   log(`speech-to-text mode: ${config.sttMode}`);
   const coach = new Coach({ waitForTranscript: segmented });
   const vad = new PauseDetector();
+  const language = languageName(config.practiceLanguage);
+
+  // Plain-language status line and last-hint timings for the page.
+  let stage: Stage = 'starting';
+  const timings: { sttMs: number | null; modelMs: number | null } = { sttMs: null, modelMs: null };
+  const setStage = (next: Stage, error?: string) => {
+    stage = next;
+    const view = describeStatus({ stage: next, language, error, pauseToHintMs: coach.state.pauseToHudDispatchMs });
+    const status = el('status');
+    status.textContent = view.text;
+    status.dataset.stage = view.stage;
+  };
+  const showTimings = () => {
+    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    const parts: string[] = [];
+    if (timings.sttMs != null) parts.push(`transcription ${sec(timings.sttMs)}`);
+    if (timings.modelMs != null) parts.push(`hint model ${sec(timings.modelMs)}`);
+    if (coach.state.pauseToHudDispatchMs != null) parts.push(`pause to hint ${sec(coach.state.pauseToHudDispatchMs)}`);
+    el('timings').textContent = parts.length ? `Last hint: ${parts.join(' · ')}` : '';
+  };
 
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
   const publish = () => {
     el('transcript').textContent = coach.state.transcript;
     el('suggestion').textContent = coach.state.suggestion ?? '';
-    el('phase').textContent = coach.state.phase;
     if (publishTimer) return;
     publishTimer = setTimeout(() => {
       publishTimer = null;
@@ -138,7 +159,10 @@ async function main(): Promise<void> {
   const run = (effects: CoachEffect[]) => {
     for (const effect of effects) {
       if (effect.type === 'publish') publish();
-      else if (effect.type === 'request') void suggest(effect.seq, effect.trigger, effect.transcript);
+      else if (effect.type === 'request') {
+        setStage('thinking');
+        void suggest(effect.seq, effect.trigger, effect.transcript);
+      }
       else void showSuggestion(effect.seq, effect.text);
     }
   };
@@ -151,26 +175,38 @@ async function main(): Promise<void> {
         body: JSON.stringify({ transcript, trigger }),
       });
       log(`suggestion (${trigger}, model ${body.modelMs} ms): ${JSON.stringify(body.result)}`);
+      timings.modelMs = body.modelMs;
       run(coach.onSuggestion(seq, body.result));
+      if (body.result.kind !== 'suggestion' && stage === 'thinking') setStage('listening');
     } catch (err) {
       log(`suggestion failed: ${String(err)}`);
       run(coach.onSuggestion(seq, { kind: 'invalid', reason: String(err) }));
+      setStage('error', 'the hint request failed (slow network?)');
     }
   }
 
   async function showSuggestion(seq: number | null, text: string): Promise<void> {
     await hud.setSuggestion(formatSuggestion(text || null));
     if (seq !== null) run(coach.onDispatched(seq, performance.now()));
+    if (text) {
+      setStage('hint');
+      showTimings();
+    } else if (stage === 'hint') {
+      setStage('listening');
+    }
   }
 
   const callbacks: SttCallbacks = {
     onTranscript: (text) => {
       run(coach.onTranscript(text));
       hud.setTranscript(formatTranscript(text));
+      // No request followed (nothing to help with): back to listening.
+      if (stage === 'transcribing') setStage('listening');
     },
     onError: (err) => {
       log(`speech-to-text ${err.type}: ${err.message}`);
       hud.setTranscript(`[speech-to-text] ${err.message}`);
+      setStage('error', `speech-to-text: ${err.message}`);
     },
     onState: (state) => log(`speech-to-text ${state}`),
     // Streaming clients: show provisional words; only onTranscript can trigger.
@@ -196,6 +232,7 @@ async function main(): Promise<void> {
               body: new Blob([wav as BlobPart], { type: 'audio/wav' }),
             });
             log(`transcribed in ${body.sttMs} ms: ${body.text}`);
+            timings.sttMs = body.sttMs;
             return body.text;
           },
         },
@@ -214,13 +251,21 @@ async function main(): Promise<void> {
       stt.sendPcm(bytes);
       for (const event of vad.push(pcmBytesToInt16(bytes))) {
         run(coach.onVad(event, performance.now()));
-        // Clip mode: the pause closes the utterance; transcribe it now.
-        if (event.kind === 'pause') void stt.flush?.();
+        if (event.kind !== 'pause') {
+          if (stage !== 'listening') setStage('listening');
+        } else if (segmented) {
+          // Clip mode: the pause closes the utterance; transcribe it now.
+          setStage('transcribing');
+          void stt.flush?.();
+        }
       }
     },
     onHelp: () => {
       run(coach.onHelp(performance.now()));
-      void stt.flush?.();
+      if (segmented) {
+        setStage('transcribing');
+        void stt.flush?.();
+      }
     },
     onDoubleTap: () => void hud.exitWithDialog(),
     onExit: () => {
@@ -229,11 +274,21 @@ async function main(): Promise<void> {
     },
   });
 
+  // The pause detector calibrates on the first second of room noise.
+  const calibrate = () => {
+    setStage('calibrating');
+    setTimeout(() => {
+      if (stage === 'calibrating') setStage('listening');
+    }, 1100);
+  };
+  calibrate();
+
   try {
     await stt.start();
   } catch (err) {
     log(`speech-to-text did not start: ${String(err)}`);
     hud.setTranscript(`[speech-to-text] ${String(err)}`);
+    setStage('error', 'speech-to-text did not start');
   }
 
   // The projector page's Reset button clears the session for a clean rerun.
@@ -244,6 +299,10 @@ async function main(): Promise<void> {
       vad.reset();
       run(coach.reset());
       hud.setTranscript(' ');
+      timings.sttMs = null;
+      timings.modelMs = null;
+      showTimings();
+      calibrate();
       await stt.start();
       log('session reset');
     })();
