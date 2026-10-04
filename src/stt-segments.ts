@@ -7,6 +7,8 @@ export interface SegmentSttOptions {
   transcribe: (wav: Uint8Array) => Promise<string>;
   minSegmentMs?: number;
   maxSegmentMs?: number;
+  /** Current calibrated speech threshold; omit to keep complete clips. */
+  trimSilenceRms?: () => number;
 }
 
 /** Groups raw microphone PCM by pause and serializes clip transcription. */
@@ -61,7 +63,7 @@ export class SegmentStt {
 
   flush(): Promise<void> {
     if (!this.open) return Promise.resolve();
-    const pcm = new Uint8Array(this.bufferedBytes);
+    let pcm: Uint8Array = new Uint8Array(this.bufferedBytes);
     let offset = 0;
     for (const chunk of this.chunks) {
       pcm.set(chunk, offset);
@@ -69,6 +71,7 @@ export class SegmentStt {
     }
     this.chunks = [];
     this.bufferedBytes = 0;
+    pcm = trimQuietEdges(pcm, this.opts.trimSilenceRms?.());
     const generation = this.generation;
     const flushSeq = ++this.flushSeq;
     const work = async () => {
@@ -102,4 +105,28 @@ export class SegmentStt {
     this.bufferedBytes = 0;
     this.cb.onState('closed');
   }
+}
+
+/** Keep utterance edges generous so soft onsets and final syllables survive. */
+function trimQuietEdges(pcm: Uint8Array, threshold: number | undefined): Uint8Array {
+  if (threshold === undefined || !Number.isFinite(threshold) || threshold <= 0) return pcm;
+  const windowBytes = 20 * BYTES_PER_MS;
+  const paddingBytes = 200 * BYTES_PER_MS;
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  let firstSpeech = -1;
+  let lastSpeechEnd = 0;
+  for (let start = 0; start < pcm.byteLength; start += windowBytes) {
+    const end = Math.min(start + windowBytes, pcm.byteLength);
+    let squares = 0;
+    for (let offset = start; offset < end; offset += 2) {
+      const sample = view.getInt16(offset, true);
+      squares += sample * sample;
+    }
+    if (Math.sqrt(squares / ((end - start) / 2)) >= threshold) {
+      if (firstSpeech < 0) firstSpeech = start;
+      lastSpeechEnd = end;
+    }
+  }
+  if (firstSpeech < 0) return pcm.subarray(0, 0);
+  return pcm.subarray(Math.max(0, firstSpeech - paddingBytes), Math.min(pcm.byteLength, lastSpeechEnd + paddingBytes));
 }
