@@ -4,7 +4,8 @@ A live conversation coach for Even Realities G2 glasses. You practise a
 language (French by default) and, when you stall or slip into your stronger
 language (English by default), the glasses show one short continuation in the
 language you are practising. The HUD also shows a transcript of what you said,
-including the words you slipped into, updated after each utterance.
+including the words you slipped into, word by word in live mode or after each
+utterance in clip mode.
 
 ## How it works
 
@@ -12,10 +13,12 @@ including the words you slipped into, updated after each utterance.
   page runs in the Even app's WebView.
 - A pause detector on the raw audio notices when you stop speaking for about
   900 ms. A temple tap asks for help at any time.
-- Speech-to-text: by default each utterance goes as one audio clip to
-  OpenRouter's transcription endpoint when you pause, so the transcript
-  updates per utterance, not word by word. With a Soniox key the app streams
-  to Soniox instead for a word-by-word transcript.
+- Speech-to-text, two modes. Live mode (`REALTIME_STT=1`, used for the demo)
+  streams audio to OpenAI realtime transcription (gpt-live-transcribe): words
+  appear as you speak and the pause closes the utterance. Clip mode (default)
+  sends each utterance as one clip when you pause (OpenAI gpt-4o-transcribe,
+  hedged with OpenRouter after 2.5 s), so the transcript updates per utterance.
+  With a Soniox key the app streams to Soniox instead.
 - On a pause or a tap, the server asks a model through OpenRouter (Claude
   Haiku 4.5 by default) for one short continuation in
   the practised language, or an explicit abstain. The prompt instructs the
