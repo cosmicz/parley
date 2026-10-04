@@ -11,7 +11,7 @@
 // microphone with an on-page imitation of the HUD: the rehearsal path, and the
 // stage fallback if Bluetooth fails.
 
-import { Glasses } from './glasses.ts';
+import { Glasses, type GlassesHandlers } from './glasses.ts';
 import { DomHud } from './dom-hud.ts';
 import { PauseDetector, pcmBytesToInt16 } from './vad.ts';
 import { Coach, type CoachEffect } from './coach.ts';
@@ -68,16 +68,51 @@ function waitForClick(button: HTMLElement): Promise<void> {
   });
 }
 
+// The SDK resolves a bridge even in a plain browser, where page creation then
+// answers 'invalid' (operator report 15:08). So try the G2 and fall back to the
+// laptop microphone with the on-page HUD whenever the G2 page cannot start.
+async function startHud(glasses: Glasses | null, handlers: GlassesHandlers): Promise<Hud> {
+  if (glasses) {
+    try {
+      await glasses.start(handlers);
+      log('HUD on the G2, glasses microphone open');
+      return glasses;
+    } catch (err) {
+      // Not awaiting glasses.stop(): without the Even app its calls may never settle.
+      log(`G2 HUD unavailable (${String(err)}): using the laptop microphone and on-page HUD`);
+    }
+  } else {
+    log('No Even bridge: using the laptop microphone and on-page HUD');
+  }
+  const dom = new DomHud(el('hud'));
+  // Browsers start audio only after a user gesture.
+  await waitForClick(el('start'));
+  await dom.start(handlers);
+  return dom;
+}
+
 async function main(): Promise<void> {
   const config = await getJson<Config>('/api/config');
   el('languages').textContent = `${config.practiceLanguage} practice, ${config.fallbackLanguage} fallback`;
 
   const glasses = await Glasses.connect();
-  const hud: Hud = glasses ?? new DomHud(el('hud'));
-  log(glasses ? 'Even bridge found: using the G2' : 'No Even bridge: laptop microphone and on-page HUD');
-  // Browsers start audio only after a user gesture, so the laptop path waits
-  // for a click before opening the microphone.
-  if (!glasses) await waitForClick(el('start'));
+  // Forwarding HUD: the real one is chosen when it starts (see startHud).
+  let active: Hud | null = null;
+  const hud: Hud = {
+    start: async (handlers) => {
+      active = await startHud(glasses, handlers);
+    },
+    setTranscript: (text) => active?.setTranscript(text),
+    setSuggestion: async (text) => {
+      await active?.setSuggestion(text);
+    },
+    exitWithDialog: async () => {
+      await active?.exitWithDialog();
+    },
+    stop: async () => {
+      await active?.stop();
+    },
+  };
 
   const segmented = config.sttMode === 'segments';
   if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENAI_API_KEY or OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env');
@@ -183,7 +218,6 @@ async function main(): Promise<void> {
       void hud.stop();
     },
   });
-  log('HUD ready, microphone open');
 
   try {
     await stt.start();
