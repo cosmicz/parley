@@ -51,7 +51,9 @@ export class RealtimeStt {
   private readonly finals = new Map<string, string>();
   private readonly partials = new Map<string, string>();
   private readonly waiters = new Map<string, () => void>();
-  private pendingCommit: ((itemId: string) => void) | null = null;
+  private readonly pendingCommits: { seq: number; resolve: (itemId: string) => void }[] = [];
+  private readonly itemFlushSeq = new Map<string, number>();
+  private flushSeq = 0;
   private readonly opts: RealtimeSttOptions;
   private readonly cb: RealtimeSttCallbacks;
   private readonly WebSocketCtor: typeof WebSocket;
@@ -68,6 +70,7 @@ export class RealtimeStt {
     this.order.length = 0;
     this.finals.clear();
     this.partials.clear();
+    this.itemFlushSeq.clear();
     this.uncommitted = false;
     this.cb.onState('connecting');
     const token = await this.opts.getToken();
@@ -102,6 +105,8 @@ export class RealtimeStt {
   async flush(): Promise<void> {
     if (!this.socket || !this.uncommitted) return;
     const generation = this.generation;
+    const flushSeq = ++this.flushSeq;
+    let committedId: string | null = null;
     this.uncommitted = false;
     const timeoutMs = this.opts.flushTimeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -110,7 +115,8 @@ export class RealtimeStt {
     });
     const done = (async () => {
       const itemId = await new Promise<string>((resolve) => {
-        this.pendingCommit = resolve;
+        // Acks follow commit order, even if two taps precede the first ack.
+        this.pendingCommits.push({ seq: flushSeq, resolve: (id) => { committedId = id; resolve(id); } });
         this.socket?.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       });
       if (this.finals.has(itemId)) return 'done' as const;
@@ -121,16 +127,16 @@ export class RealtimeStt {
     clearTimeout(timer);
     if (generation !== this.generation) return;
     if (outcome === 'timeout') {
-      this.pendingCommit = null;
+      if (flushSeq !== this.flushSeq) return;
+      // Retain an unacknowledged commit as a FIFO placeholder: deleting it
+      // would associate its late acknowledgement with a newer flush.
       // Promote the turn in progress so the coach still gets this turn's words;
       // a late completed event replaces it. Only report an error when there is
       // nothing to promote, since main.ts shows errors on the HUD.
-      if (this.partials.size > 0) {
-        for (const [id, partial] of this.partials) {
-          if (!this.order.includes(id)) this.order.push(id);
-          this.finals.set(id, partial.trim());
-        }
-        this.partials.clear();
+      const partial = committedId ? this.partials.get(committedId) : undefined;
+      if (committedId && partial?.trim()) {
+        this.finals.set(committedId, partial.trim());
+        this.partials.delete(committedId);
         this.cb.onTranscript(this.text(false));
       } else {
         this.cb.onError({ type: 'flush_timeout', message: `no final transcript within ${timeoutMs} ms` });
@@ -144,7 +150,7 @@ export class RealtimeStt {
   }
 
   private close(): void {
-    this.pendingCommit = null;
+    this.pendingCommits.length = 0;
     this.waiters.clear();
     const socket = this.socket;
     this.socket = null;
@@ -169,8 +175,15 @@ export class RealtimeStt {
     switch (event.type) {
       case 'input_audio_buffer.committed':
         if (id && !this.order.includes(id)) this.order.push(id);
-        if (id) this.pendingCommit?.(id);
-        this.pendingCommit = null;
+        if (id) {
+          const pending = this.pendingCommits.shift();
+          if (pending) {
+            this.itemFlushSeq.set(id, pending.seq);
+            pending.resolve(id);
+            // A completion may have arrived before its acknowledgement.
+            if (this.finals.has(id) && pending.seq === this.flushSeq) this.cb.onTranscript(this.text(false));
+          }
+        }
         break;
       case 'conversation.item.input_audio_transcription.delta':
         if (!id) break;
@@ -182,7 +195,8 @@ export class RealtimeStt {
         if (!this.order.includes(id)) this.order.push(id);
         this.finals.set(id, (event.transcript ?? '').trim());
         this.partials.delete(id);
-        this.cb.onTranscript(this.text(false));
+        if (this.itemFlushSeq.get(id) === this.flushSeq) this.cb.onTranscript(this.text(false));
+        else this.cb.onPartial?.(this.text(true));
         this.waiters.get(id)?.();
         this.waiters.delete(id);
         break;
