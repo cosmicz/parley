@@ -4,17 +4,37 @@
 
 import type { SuggestResult, Trigger } from '../src/suggest-core.ts';
 
+/**
+ * How the phone gets a transcript: Soniox streaming, OpenRouter clips of
+ * speech segments (POST /api/transcribe), or neither.
+ */
+export type SttMode = 'soniox' | 'segments' | 'none';
+
+/** Who serves suggestions and clip transcription: OpenRouter is preferred. */
+export type Provider = 'openrouter' | 'openai' | 'none';
+
 /** GET /api/config */
 export interface ConfigResponse {
   practiceLanguage: string;
   fallbackLanguage: string;
   model: string;
+  provider: Provider;
+  sttMode: SttMode;
 }
 
 /** GET /api/stt-token: a short-lived, single-use Soniox key for the websocket. */
 export interface SttTokenResponse {
   apiKey: string;
   expiresAt: string;
+}
+
+/**
+ * POST /api/transcribe: the request body is one WAV clip (Content-Type
+ * audio/wav, at most 1 MB). sttMs is wall time of the upstream call only.
+ */
+export interface TranscribeResponse {
+  text: string;
+  sttMs: number;
 }
 
 /** POST /api/suggest request body. */

@@ -29,13 +29,13 @@ including the words you slipped into, updated after each utterance.
 
 ## Run it
 
-Requirements: Node 23, pnpm and an OpenRouter API key. A Soniox API key is
-optional, for word-by-word transcripts.
+Requirements: Node 23, pnpm and an OpenRouter or OpenAI API key. A Soniox
+API key is optional, for word-by-word transcripts.
 
 ```bash
 cd app
 pnpm install --frozen-lockfile
-cp .env.example .env.local   # then fill in OPENROUTER_API_KEY (SONIOX_API_KEY optional)
+cp .env.example .env.local   # then fill in OPENROUTER_API_KEY or OPENAI_API_KEY (SONIOX_API_KEY optional)
 npm test                     # unit tests (node:test)
 npm run dev                  # Vite dev server on port 5173, reachable on the LAN
 ```
@@ -70,9 +70,18 @@ npm run simulate
 ## Configuration
 
 `.env.local` (never committed): `SONIOX_API_KEY`, `OPENROUTER_API_KEY`,
-`COACH_MODEL` (an OpenRouter model id, default `anthropic/claude-haiku-4.5`),
+`OPENAI_API_KEY`, `COACH_MODEL`, `OPENAI_COACH_MODEL`, `TRANSCRIBE_MODEL`,
 `PRACTICE_LANGUAGE` (default `fr`), `FALLBACK_LANGUAGE` (default `en`).
-Suggestions go through OpenRouter's chat-completions API with plain `fetch`.
+
+Suggestions and clip transcription use OpenRouter when `OPENROUTER_API_KEY`
+is set, otherwise OpenAI directly when `OPENAI_API_KEY` is set, all with plain
+`fetch`. Model defaults: on OpenRouter `anthropic/claude-haiku-4.5` and
+`openai/gpt-4o-mini-transcribe`; on OpenAI `gpt-4.1-mini` and
+`gpt-4o-mini-transcribe` (an OpenRouter slug in `COACH_MODEL` or
+`TRANSCRIBE_MODEL` is ignored there). `/api/config` reports `provider`
+(`openrouter`, `openai` or `none`) and `sttMode`: `soniox` (streaming) when
+`SONIOX_API_KEY` is set, otherwise `segments` (speech clips posted to
+`/api/transcribe`) when a provider key is set, otherwise `none`.
 
 ## License
 

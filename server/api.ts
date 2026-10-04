@@ -6,13 +6,17 @@
 // model results.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { publicConfig, type ServerConfig } from './config.ts';
+import { providerAccess, publicConfig, type ServerConfig } from './config.ts';
 import { suggest } from './coach.ts';
+import { isWav, transcribe } from './transcribe.ts';
 import { EventHub } from './events.ts';
-import type { SttTokenResponse, SuggestRequest, SuggestResponse } from './contract.ts';
+import type { SttTokenResponse, SuggestRequest, SuggestResponse, TranscribeResponse } from './contract.ts';
 
 export const SONIOX_TEMP_KEY_URL = 'https://api.soniox.com/v1/auth/temporary-api-key';
 export const MAX_BODY_BYTES = 64 * 1024;
+export const NO_PROVIDER = 'no model provider is configured: set OPENROUTER_API_KEY or OPENAI_API_KEY';
+export const MAX_WAV_BYTES = 1024 * 1024;
+const WAV_TYPES = new Set(['audio/wav', 'audio/wave', 'audio/x-wav']);
 
 export interface ApiDeps {
   config: ServerConfig;
@@ -79,17 +83,44 @@ export function createApi(deps: ApiDeps): Middleware {
     '/api/suggest': {
       POST: async (req, res) => {
         const input = parseSuggestRequest(await readJson(req));
-        const apiKey = deps.config.openRouterApiKey;
-        if (!apiKey) throw new HttpError(503, 'OPENROUTER_API_KEY is not configured');
+        const access = providerAccess(deps.config);
+        if (!access) throw new HttpError(503, NO_PROVIDER);
         let response: SuggestResponse;
         try {
           response = await suggest(
-            { apiKey, fetch: fetchImpl, now: deps.now },
+            { ...access, fetch: fetchImpl, now: deps.now },
             { ...input, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage, model: deps.config.model },
           );
         } catch (err) {
           log(`model call failed: ${errorMessage(err)}`);
           throw new HttpError(502, `model call failed: ${errorMessage(err)}`);
+        }
+        sendJson(res, 200, response);
+      },
+    },
+
+    '/api/transcribe': {
+      POST: async (req, res) => {
+        const type = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+        if (!WAV_TYPES.has(type)) throw new HttpError(415, 'body must be audio/wav');
+        const wav = await readBytes(req, MAX_WAV_BYTES);
+        if (!isWav(wav)) throw new HttpError(400, 'body is not a RIFF/WAVE file');
+        const access = providerAccess(deps.config);
+        if (!access) throw new HttpError(503, NO_PROVIDER);
+        let response: TranscribeResponse;
+        try {
+          response = await transcribe(
+            { ...access, fetch: fetchImpl, now: deps.now },
+            {
+              wav,
+              model: deps.config.transcribeModel,
+              practiceLanguage: deps.config.practiceLanguage,
+              fallbackLanguage: deps.config.fallbackLanguage,
+            },
+          );
+        } catch (err) {
+          log(`transcription failed: ${errorMessage(err)}`);
+          throw new HttpError(502, `transcription failed: ${errorMessage(err)}`);
         }
         sendJson(res, 200, response);
       },
@@ -146,16 +177,23 @@ function parseSuggestRequest(body: unknown): SuggestRequest {
   return { transcript: obj.transcript, trigger: obj.trigger };
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+// An oversized body is drained rather than cut off, so the client reads the
+// 413 instead of a reset connection.
+async function readBytes(req: IncomingMessage, limit: number): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'request body too large');
-    chunks.push(chunk as Buffer);
+    if (size <= limit) chunks.push(chunk as Buffer);
   }
+  if (size > limit) throw new HttpError(413, `request body larger than ${limit} bytes`);
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const bytes = await readBytes(req, MAX_BODY_BYTES);
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(Buffer.from(bytes).toString('utf8'));
   } catch {
     throw new HttpError(400, 'request body must be JSON');
   }

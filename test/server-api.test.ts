@@ -4,8 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createApi, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
-import { OPENROUTER_CHAT_URL } from '../server/coach.ts';
+import { createApi, MAX_WAV_BYTES, NO_PROVIDER, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
 import { readConfig, type ServerConfig } from '../server/config.ts';
 import { EventHub } from '../server/events.ts';
 
@@ -13,6 +12,8 @@ const CONFIG: ServerConfig = {
   practiceLanguage: 'fr',
   fallbackLanguage: 'en',
   model: 'anthropic/claude-haiku-4.5',
+  provider: 'openrouter',
+  transcribeModel: 'openai/gpt-4o-mini-transcribe',
   sonioxApiKey: 'soniox-long-lived',
   openRouterApiKey: 'openrouter-long-lived',
 };
@@ -74,19 +75,65 @@ test('config comes from the environment with defaults and never exposes keys', a
   assert.deepEqual(readConfig({ ANTHROPIC_API_KEY: 'retired' }), {
     practiceLanguage: 'fr',
     fallbackLanguage: 'en',
+    provider: 'none',
     model: 'anthropic/claude-haiku-4.5',
+    transcribeModel: 'openai/gpt-4o-mini-transcribe',
     sonioxApiKey: undefined,
     openRouterApiKey: undefined,
+    openAiApiKey: undefined,
   });
-  const config = readConfig({ PRACTICE_LANGUAGE: 'es', FALLBACK_LANGUAGE: 'ro', COACH_MODEL: 'm', SONIOX_API_KEY: 's', OPENROUTER_API_KEY: 'o' });
+  const config = readConfig({
+    PRACTICE_LANGUAGE: 'es',
+    FALLBACK_LANGUAGE: 'ro',
+    COACH_MODEL: 'm',
+    TRANSCRIBE_MODEL: 't',
+    SONIOX_API_KEY: 's',
+    OPENROUTER_API_KEY: 'o',
+  });
   assert.equal(config.openRouterApiKey, 'o');
+  assert.equal(config.transcribeModel, 't');
   const h = await serve({ config });
   try {
     const res = await fetch(`${h.base}/api/config`);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { practiceLanguage: 'es', fallbackLanguage: 'ro', model: 'm' });
+    assert.deepEqual(await res.json(), { practiceLanguage: 'es', fallbackLanguage: 'ro', model: 'm', provider: 'openrouter', sttMode: 'soniox' });
   } finally {
     await h.close();
+  }
+});
+
+test('the provider is OpenRouter when its key is set, else OpenAI with OpenAI model ids, else none', () => {
+  const both = readConfig({ OPENROUTER_API_KEY: 'o', OPENAI_API_KEY: 'k' });
+  assert.equal(both.provider, 'openrouter');
+  assert.equal(both.model, 'anthropic/claude-haiku-4.5');
+
+  // The operator's .env at 14:27: an OpenRouter slug left in COACH_MODEL.
+  const openAi = readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'anthropic/claude-haiku-4.5', TRANSCRIBE_MODEL: 'openai/gpt-4o-mini-transcribe' });
+  assert.equal(openAi.provider, 'openai');
+  assert.equal(openAi.model, 'gpt-4.1-mini');
+  assert.equal(openAi.transcribeModel, 'gpt-4o-mini-transcribe');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1' }).model, 'gpt-4.1');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1', OPENAI_COACH_MODEL: 'gpt-4o' }).model, 'gpt-4o');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', TRANSCRIBE_MODEL: 'gpt-4o-transcribe' }).transcribeModel, 'gpt-4o-transcribe');
+  assert.equal(readConfig({}).provider, 'none');
+});
+
+test('sttMode prefers Soniox streaming, falls back to OpenRouter clips, else none', async () => {
+  const cases: [Partial<ServerConfig>, string][] = [
+    [{}, 'soniox'],
+    [{ openRouterApiKey: undefined }, 'soniox'],
+    [{ sonioxApiKey: undefined }, 'segments'],
+    [{ sonioxApiKey: undefined, openRouterApiKey: undefined }, 'none'],
+    [{ sonioxApiKey: undefined, openRouterApiKey: undefined, provider: 'openai', openAiApiKey: 'k' }, 'segments'],
+  ];
+  for (const [override, expected] of cases) {
+    const h = await serve({ config: { ...CONFIG, ...override } });
+    try {
+      const body = await (await fetch(`${h.base}/api/config`)).json();
+      assert.equal(body.sttMode, expected, JSON.stringify(override));
+    } finally {
+      await h.close();
+    }
   }
 });
 
@@ -157,7 +204,7 @@ test('suggest sends the configured prompt to OpenRouter and returns the parsed s
     assert.deepEqual(body, { result: { kind: 'suggestion', text: 'un rendez-vous' }, modelMs: 420 });
     assert.equal(router.calls.length, 1);
     const call = router.calls[0];
-    assert.equal(call.url, OPENROUTER_CHAT_URL);
+    assert.equal(call.url, 'https://openrouter.ai/api/v1/chat/completions');
     assert.equal(call.headers.Authorization, 'Bearer openrouter-long-lived');
     assert.equal(call.headers['X-OpenRouter-Title'], 'Parley');
     assert.equal(call.body.model, 'anthropic/claude-haiku-4.5');
@@ -207,7 +254,7 @@ test('suggest rejects a bad body and reports a missing key without calling OpenR
   try {
     const { status, body } = await postSuggest(noKey.base);
     assert.equal(status, 503);
-    assert.equal(body.error, 'OPENROUTER_API_KEY is not configured');
+    assert.equal(body.error, NO_PROVIDER);
   } finally {
     await noKey.close();
   }
@@ -233,6 +280,194 @@ test('suggest maps HTTP errors, in-band errors, malformed replies and network fa
     } finally {
       await h.close();
     }
+  }
+});
+
+// A minimal 16 kHz mono 16-bit WAV with `samples` samples of a ramp.
+function wav(samples: number): Uint8Array {
+  const out = Buffer.alloc(44 + samples * 2);
+  out.write('RIFF', 0, 'ascii');
+  out.writeUInt32LE(36 + samples * 2, 4);
+  out.write('WAVEfmt ', 8, 'ascii');
+  out.writeUInt32LE(16, 16);
+  out.writeUInt16LE(1, 20);
+  out.writeUInt16LE(1, 22);
+  out.writeUInt32LE(16000, 24);
+  out.writeUInt32LE(32000, 28);
+  out.writeUInt16LE(2, 32);
+  out.writeUInt16LE(16, 34);
+  out.write('data', 36, 'ascii');
+  out.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++) out.writeInt16LE((i * 37) % 30000, 44 + i * 2);
+  return out;
+}
+
+function fakeTranscriber(reply: unknown, status = 200): { fetch: typeof fetch; calls: { url: string; headers: Record<string, string>; body: any }[] } {
+  const calls: { url: string; headers: Record<string, string>; body: any }[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) });
+    if (reply instanceof Error) throw reply;
+    return new Response(JSON.stringify(reply), { status, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  return { fetch: fakeFetch, calls };
+}
+
+const HINT = 'Mostly French with occasional English words; write each word in the language spoken; keep fillers like euh and um.';
+
+const postWav = (base: string, body: Uint8Array, type = 'audio/wav') =>
+  fetch(`${base}/api/transcribe`, { method: 'POST', headers: { 'Content-Type': type }, body: new Blob([body as Uint8Array<ArrayBuffer>]) });
+
+test('transcribe sends the clip to OpenRouter as base64 JSON with a mixed-language hint and no forced language', async () => {
+  const stt = fakeTranscriber({ text: ' Je voudrais um un rendez-vous ', usage: { seconds: 1.2 } });
+  let clock = 0;
+  const h = await serve({ fetch: stt.fetch, now: () => (clock += 640) });
+  try {
+    const clip = wav(16000);
+    const res = await postWav(h.base, clip);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { text: 'Je voudrais um un rendez-vous', sttMs: 640 });
+    assert.equal(stt.calls.length, 1);
+    const call = stt.calls[0];
+    assert.equal(call.url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+    assert.equal(call.headers.Authorization, 'Bearer openrouter-long-lived');
+    assert.equal(call.headers['Content-Type'], 'application/json');
+    assert.equal(call.body.model, 'openai/gpt-4o-mini-transcribe');
+    assert.equal(call.body.input_audio.format, 'wav');
+    assert.ok(Buffer.from(call.body.input_audio.data, 'base64').equals(clip), 'clip bytes survive the base64 round trip');
+    assert.ok(!('language' in call.body), 'language must be auto-detected so slips survive');
+    const hint = HINT;
+    assert.deepEqual(call.body.provider, { options: { openai: { prompt: hint }, groq: { prompt: hint } } });
+  } finally {
+    await h.close();
+  }
+});
+
+test('transcribe rejects a wrong type, a non-WAV body and a clip over 1 MB before calling OpenRouter', async () => {
+  const stt = fakeTranscriber({ text: 'x' });
+  const h = await serve({ fetch: stt.fetch });
+  try {
+    assert.equal((await postWav(h.base, wav(100), 'application/json')).status, 415);
+    assert.equal((await postWav(h.base, Buffer.from('not a wav file at all'))).status, 400);
+    const big = await postWav(h.base, wav(MAX_WAV_BYTES / 2));
+    assert.equal(big.status, 413);
+    assert.match((await big.json()).error, /larger than 1048576 bytes/);
+    assert.equal((await postWav(h.base, wav(MAX_WAV_BYTES / 2 - 22))).status, 200, 'exactly 1 MB is accepted');
+    assert.equal(stt.calls.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('transcribe without an OpenRouter key answers 503 and never calls upstream', async () => {
+  const stt = fakeTranscriber({ text: 'x' });
+  const h = await serve({ config: { ...CONFIG, openRouterApiKey: undefined }, fetch: stt.fetch });
+  try {
+    const res = await postWav(h.base, wav(100));
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).error, NO_PROVIDER);
+    assert.equal(stt.calls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test('transcribe maps HTTP errors, a missing text field and network failures to 502 without the key', async () => {
+  const cases: [unknown, number, RegExp][] = [
+    [{ error: { code: 400, message: 'Unsupported audio format' } }, 400, /400: Unsupported audio format/],
+    [{ error: { code: 402, message: 'Insufficient credits' } }, 402, /402: Insufficient credits/],
+    [{ usage: { seconds: 1 } }, 200, /no text in response/],
+    [new TypeError('fetch failed'), 0, /request failed: fetch failed/],
+  ];
+  for (const [reply, status, pattern] of cases) {
+    const h = await serve({ fetch: fakeTranscriber(reply, status).fetch });
+    try {
+      const res = await postWav(h.base, wav(100));
+      const text = await res.text();
+      assert.equal(res.status, 502, `reply ${JSON.stringify(reply)}`);
+      assert.match(JSON.parse(text).error, pattern);
+      assert.ok(!text.includes('openrouter-long-lived'), 'long-lived key leaked to the client');
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+const OPENAI_CONFIG: ServerConfig = {
+  ...CONFIG,
+  provider: 'openai',
+  model: 'gpt-4.1-mini',
+  transcribeModel: 'gpt-4o-mini-transcribe',
+  sonioxApiKey: undefined,
+  openRouterApiKey: undefined,
+  openAiApiKey: 'openai-long-lived',
+};
+
+test('with only an OpenAI key, suggest calls OpenAI chat completions with max_completion_tokens', async () => {
+  const router = fakeOpenRouter(completion('{"suggestion": "un rendez-vous"}'));
+  const h = await serve({ config: OPENAI_CONFIG, fetch: router.fetch });
+  try {
+    const { status, body } = await postSuggest(h.base);
+    assert.equal(status, 200);
+    assert.deepEqual(body.result, { kind: 'suggestion', text: 'un rendez-vous' });
+    const call = router.calls[0];
+    assert.equal(call.url, 'https://api.openai.com/v1/chat/completions');
+    assert.equal(call.headers.Authorization, 'Bearer openai-long-lived');
+    assert.equal(call.body.model, 'gpt-4.1-mini');
+    assert.equal(call.body.max_completion_tokens, 256);
+    assert.ok(!Object.hasOwn(call.body, 'max_tokens'), 'OpenAI takes max_completion_tokens');
+    assert.deepEqual(call.body.messages.map((m) => m.role), ['system', 'user']);
+  } finally {
+    await h.close();
+  }
+});
+
+test('an OpenAI refusal maps to abstain and an OpenAI error to 502 without the key', async () => {
+  const refusal = await serve({ config: OPENAI_CONFIG, fetch: fakeOpenRouter(completion(null, 'stop', { message: { role: 'assistant', content: null, refusal: 'I cannot help.' } })).fetch });
+  try {
+    const { status, body } = await postSuggest(refusal.base);
+    assert.equal(status, 200);
+    assert.deepEqual(body.result, { kind: 'abstain' });
+  } finally {
+    await refusal.close();
+  }
+  const failing = await serve({ config: OPENAI_CONFIG, fetch: fakeOpenRouter({ error: { message: 'Incorrect API key provided', type: 'invalid_request_error' } }, 401).fetch });
+  try {
+    const res = await fetch(`${failing.base}/api/suggest`, { method: 'POST', body: JSON.stringify({ transcript: 'x', trigger: 'tap' }) });
+    const text = await res.text();
+    assert.equal(res.status, 502);
+    assert.match(JSON.parse(text).error, /OpenAI answered 401: Incorrect API key provided/);
+    assert.ok(!text.includes('openai-long-lived'));
+  } finally {
+    await failing.close();
+  }
+});
+
+test('with only an OpenAI key, transcribe posts multipart form data with the prompt and no language', async () => {
+  const calls: { url: string; headers: Record<string, string>; form: FormData }[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, headers: init.headers as Record<string, string>, form: init.body as FormData });
+    return new Response(JSON.stringify({ text: 'Je voudrais um appointment' }), { status: 200 });
+  }) as typeof fetch;
+  const h = await serve({ config: OPENAI_CONFIG, fetch: fakeFetch });
+  try {
+    const clip = wav(800);
+    const res = await postWav(h.base, clip);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).text, 'Je voudrais um appointment');
+    const call = calls[0];
+    assert.equal(call.url, 'https://api.openai.com/v1/audio/transcriptions');
+    assert.deepEqual(call.headers, { Authorization: 'Bearer openai-long-lived' }, 'fetch must set the multipart boundary');
+    assert.ok(call.form instanceof FormData);
+    const file = call.form.get('file') as File;
+    assert.equal(file.name, 'clip.wav');
+    assert.equal(file.type, 'audio/wav');
+    assert.ok(Buffer.from(await file.arrayBuffer()).equals(clip), 'clip bytes are uploaded unchanged');
+    assert.equal(call.form.get('model'), 'gpt-4o-mini-transcribe');
+    assert.equal(call.form.get('response_format'), 'json');
+    assert.equal(call.form.get('prompt'), HINT);
+    assert.equal(call.form.get('language'), null, 'language must be auto-detected so slips survive');
+  } finally {
+    await h.close();
   }
 });
 
