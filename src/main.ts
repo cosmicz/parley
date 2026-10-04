@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   if (!glasses) await waitForClick(el('start'));
 
   const segmented = config.sttMode === 'segments';
-  if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env.local');
+  if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENAI_API_KEY or OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env');
   log(`speech-to-text mode: ${config.sttMode}`);
   const coach = new Coach({ waitForTranscript: segmented });
   const vad = new PauseDetector();

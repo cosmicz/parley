@@ -31,6 +31,14 @@ test('practice and fallback languages swap cleanly, e.g. French practice with En
   assert.match(p.system, /ONE short French phrase/);
 });
 
+test('prompt puts repairing a recent fallback-language slip before continuing', () => {
+  const p = buildSuggestPrompt({ transcript: 'Je voudrais prendre un appointment euh', practiceLanguage: 'fr', fallbackLanguage: 'en', trigger: 'pause' });
+  const repair = p.system.indexOf('First priority');
+  const cont = p.system.indexOf('Otherwise');
+  assert.ok(repair >= 0 && cont > repair, 'repair rule must come before the continuation rule');
+  assert.match(p.system, /English words? near the end/);
+});
+
 test('parses a suggestion', () => {
   assert.deepEqual(parseSuggestion('{"suggestion": "make an appointment"}'), {
     kind: 'suggestion',
