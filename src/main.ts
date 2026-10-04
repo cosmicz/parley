@@ -215,13 +215,8 @@ async function main(): Promise<void> {
       hud.setTranscript(formatTranscript(text));
     },
   };
-  const stt: Stt = config.sttMode === 'realtime'
-    ? new RealtimeStt(
-        { getToken: async () => getJson<{ apiKey: string; sampleRate: number }>('/api/realtime-token') },
-        callbacks,
-      )
-    : segmented
-    ? new SegmentStt(
+  const makeClipStt = (): Stt =>
+    new SegmentStt(
         {
           // Drop silent edges (calibration, waiting) using the live speech threshold.
           trimSilenceRms: () => vad.threshold,
@@ -237,7 +232,14 @@ async function main(): Promise<void> {
           },
         },
         callbacks,
+      );
+  let stt: Stt = config.sttMode === 'realtime'
+    ? new RealtimeStt(
+        { getToken: async () => getJson<{ apiKey: string; sampleRate: number }>('/api/realtime-token') },
+        callbacks,
       )
+    : segmented
+    ? makeClipStt()
     : new SonioxStream(
         {
           getTempKey: async () => (await getJson<{ apiKey: string }>('/api/stt-token')).apiKey,
@@ -287,8 +289,22 @@ async function main(): Promise<void> {
     await stt.start();
   } catch (err) {
     log(`speech-to-text did not start: ${String(err)}`);
-    hud.setTranscript(`[speech-to-text] ${String(err)}`);
-    setStage('error', 'speech-to-text did not start');
+    if (config.sttMode === 'realtime') {
+      // Live streaming could not open (seen live: a 502 on the token route on
+      // venue Wi-Fi). Clip mode needs only plain HTTPS requests, so fall back.
+      log('falling back to clip transcription (one request per utterance)');
+      stt = makeClipStt();
+      try {
+        await stt.start();
+        calibrate();
+      } catch (clipErr) {
+        log(`clip transcription did not start: ${String(clipErr)}`);
+        setStage('error', 'speech-to-text did not start');
+      }
+    } else {
+      hud.setTranscript(`[speech-to-text] ${String(err)}`);
+      setStage('error', 'speech-to-text did not start');
+    }
   }
 
   // The projector page's Reset button clears the session for a clean rerun.
