@@ -43,18 +43,22 @@ export function transcriptionHint(practiceLanguage: string, fallbackLanguage: st
 export interface TranscribeAccess extends ProviderAccess {
   fetch: typeof fetch;
   now?: () => number;
+  /** Aborts the request, e.g. when another provider already answered. */
+  signal?: AbortSignal;
 }
 
 export async function transcribe(access: TranscribeAccess, call: TranscribeCall): Promise<{ text: string; sttMs: number }> {
   const now = access.now ?? (() => performance.now());
   const hint = transcriptionHint(call.practiceLanguage, call.fallbackLanguage);
   const started = now();
+  const timeout = AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS);
+  const signal = access.signal ? AbortSignal.any([timeout, access.signal]) : timeout;
   let response: Response;
   try {
     response = await access.fetch(
       access.provider === 'openai' ? OPENAI_TRANSCRIBE_URL : OPENROUTER_TRANSCRIBE_URL,
       access.provider === 'openai'
-        ? { method: 'POST', headers: openAiHeaders(access.apiKey, false), body: openAiForm(call, hint), signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS) }
+        ? { method: 'POST', headers: openAiHeaders(access.apiKey, false), body: openAiForm(call, hint), signal }
         : {
             method: 'POST',
             headers: openRouterHeaders(access.apiKey),
@@ -63,7 +67,7 @@ export async function transcribe(access: TranscribeAccess, call: TranscribeCall)
               input_audio: { data: Buffer.from(call.wav).toString('base64'), format: 'wav' },
               provider: { options: { openai: { prompt: hint }, groq: { prompt: hint } } },
             }),
-            signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
+            signal,
           },
     );
   } catch (err) {
@@ -75,6 +79,41 @@ export async function transcribe(access: TranscribeAccess, call: TranscribeCall)
   const text = (body as { text?: unknown } | null)?.text;
   if (typeof text !== 'string') throw new TranscribeError(`no text in response: ${upstreamErrorText(body)}`);
   return { text: text.trim(), sttMs };
+}
+
+/**
+ * Sends the clip to every route at once and returns the first success; the
+ * other requests are aborted. Fails only when every route failed.
+ */
+export function transcribeFirst(
+  routes: Array<TranscribeAccess & { model: string }>,
+  call: Omit<TranscribeCall, 'model'>,
+): Promise<{ text: string; sttMs: number; provider: ProviderAccess['provider'] }> {
+  if (routes.length === 0) return Promise.reject(new TranscribeError('no transcription route'));
+  const controllers = routes.map(() => new AbortController());
+  const failures: string[] = [];
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    routes.forEach((route, i) => {
+      transcribe({ ...route, signal: controllers[i].signal }, { ...call, model: route.model }).then(
+        (result) => {
+          if (settled) return;
+          settled = true;
+          controllers.forEach((controller, j) => {
+            if (j !== i) controller.abort();
+          });
+          resolve({ ...result, provider: route.provider });
+        },
+        (err: unknown) => {
+          failures.push(`${providerLabel(route.provider)}: ${err instanceof Error ? err.message : String(err)}`);
+          if (!settled && failures.length === routes.length) {
+            settled = true;
+            reject(new TranscribeError(failures.join('; ')));
+          }
+        },
+      );
+    });
+  });
 }
 
 // No language field, for the same reason as above.

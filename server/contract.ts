@@ -35,6 +35,8 @@ export interface SttTokenResponse {
 export interface TranscribeResponse {
   text: string;
   sttMs: number;
+  /** Which provider answered first (pahax-k4s races both when both keys are set). */
+  provider: Exclude<Provider, 'none'>;
 }
 
 /** GET /api/realtime-token: an ephemeral OpenAI client secret (ek_...) for one transcription session. */

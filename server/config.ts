@@ -7,6 +7,8 @@ import type { ConfigResponse, Provider, SttMode } from './contract.ts';
 export interface ServerConfig extends Omit<ConfigResponse, 'sttMode'> {
   /** Model id for POST /api/transcribe, in the transcription provider's naming. */
   transcribeModel: string;
+  /** OpenRouter's model when both keys are set and transcription races both. */
+  openRouterTranscribeModel?: string;
   /**
    * Transcription prefers OpenAI direct whenever its key is set: live at 15:23
    * the same clip took 7.7-8.2 s through OpenRouter vs 2.1 s direct (arc-7qwo).
@@ -55,6 +57,9 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
       // Live via OpenRouter 15:16: openai/gpt-4o-transcribe 1.2-2.0 s, accurate;
       // openai/gpt-4o-mini-transcribe 2.3-2.8 s and turned "euh" into "you"/"U.".
       : (transcribeModel ?? 'openai/gpt-4o-transcribe'),
+    openRouterTranscribeModel: isOpenRouterSlug(transcribeModel)
+      ? transcribeModel
+      : `openai/${transcribeModel ?? 'gpt-4o-transcribe'}`,
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
     openRouterApiKey,
     openAiApiKey,
@@ -73,6 +78,24 @@ export function providerAccess(config: ServerConfig): ProviderAccess | null {
 export function transcribeAccess(config: ServerConfig): ProviderAccess | null {
   if (config.transcribeProvider === 'openai' && config.openAiApiKey) return { provider: 'openai', apiKey: config.openAiApiKey };
   return providerAccess(config);
+}
+
+export type TranscribeRoute = ProviderAccess & { model: string };
+
+/**
+ * Where POST /api/transcribe sends a clip. With both keys, OpenAI direct and
+ * OpenRouter race (pahax-k4s): live latency on either swung from under 1 s to
+ * over 10 s at 15:45, so the first success wins.
+ */
+export function transcribeRoutes(config: ServerConfig): TranscribeRoute[] {
+  if (config.openAiApiKey && config.openRouterApiKey) {
+    return [
+      { provider: 'openai', apiKey: config.openAiApiKey, model: config.transcribeProvider === 'openai' ? config.transcribeModel : 'gpt-4o-transcribe' },
+      { provider: 'openrouter', apiKey: config.openRouterApiKey, model: config.openRouterTranscribeModel ?? 'openai/gpt-4o-transcribe' },
+    ];
+  }
+  const access = transcribeAccess(config);
+  return access ? [{ ...access, model: config.transcribeModel }] : [];
 }
 
 /** The public view of the config; never includes keys. */

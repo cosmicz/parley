@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createApi, MAX_WAV_BYTES, NO_PROVIDER, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
-import { readConfig, type ServerConfig } from '../server/config.ts';
+import { readConfig, transcribeRoutes, type ServerConfig } from '../server/config.ts';
 import { EventHub } from '../server/events.ts';
 
 const CONFIG: ServerConfig = {
@@ -79,6 +79,7 @@ test('config comes from the environment with defaults and never exposes keys', a
     fallbackLanguage: 'en',
     provider: 'none',
     transcribeProvider: 'none',
+    openRouterTranscribeModel: 'openai/gpt-4o-transcribe',
     model: 'anthropic/claude-haiku-4.5',
     transcribeModel: 'openai/gpt-4o-transcribe',
     sonioxApiKey: undefined,
@@ -332,7 +333,7 @@ test('transcribe sends the clip to OpenRouter as base64 JSON with a mixed-langua
     const clip = wav(16000);
     const res = await postWav(h.base, clip);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { text: 'Je voudrais um un rendez-vous', sttMs: 640 });
+    assert.deepEqual(await res.json(), { text: 'Je voudrais um un rendez-vous', sttMs: 640, provider: 'openrouter' });
     assert.equal(stt.calls.length, 1);
     const call = stt.calls[0];
     assert.equal(call.url, 'https://openrouter.ai/api/v1/audio/transcriptions');
@@ -542,6 +543,97 @@ test('realtime-token needs the flag and an OpenAI key, and maps upstream failure
       await h.close();
     }
   }
+});
+
+// A fake fetch for both transcription endpoints: per-URL delay and outcome,
+// honouring the abort signal like real fetch, and recording aborts.
+function racingFetch(plan: Record<'openai' | 'openrouter', { ms: number; ok: boolean }>) {
+  const aborted: string[] = [];
+  const started: string[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    const who = url.startsWith('https://api.openai.com') ? 'openai' : 'openrouter';
+    started.push(who);
+    const { ms, ok } = plan[who];
+    await new Promise<void>((resolve, reject) => {
+      // Like real fetch, an abort after the response arrived is a no-op.
+      const onAbort = () => {
+        clearTimeout(timer);
+        aborted.push(who);
+        reject(new DOMException('aborted', 'AbortError'));
+      };
+      const timer = setTimeout(() => {
+        init.signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      init.signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    return ok
+      ? new Response(JSON.stringify({ text: `from ${who}` }), { status: 200 })
+      : new Response(JSON.stringify({ error: { message: `${who} down` } }), { status: 500 });
+  }) as typeof fetch;
+  return { fetch: fakeFetch, aborted, started };
+}
+
+const BOTH_KEYS: ServerConfig = {
+  ...OPENAI_CONFIG,
+  transcribeProvider: 'openai',
+  transcribeModel: 'gpt-4o-transcribe',
+  openRouterTranscribeModel: 'openai/gpt-4o-transcribe',
+  openRouterApiKey: 'openrouter-long-lived',
+};
+
+test('with both keys, transcription races OpenAI and OpenRouter; the first success wins and the loser is aborted', async () => {
+  for (const [fast, slow] of [['openai', 'openrouter'], ['openrouter', 'openai']] as const) {
+    const plan = { [fast]: { ms: 10, ok: true }, [slow]: { ms: 500, ok: true } } as Record<'openai' | 'openrouter', { ms: number; ok: boolean }>;
+    const race = racingFetch(plan);
+    const h = await serve({ config: BOTH_KEYS, fetch: race.fetch });
+    try {
+      const startedAt = performance.now();
+      const res = await postWav(h.base, wav(100));
+      const body = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(body.provider, fast);
+      assert.equal(body.text, `from ${fast}`);
+      assert.ok(performance.now() - startedAt < 400, 'answered without waiting for the slow provider');
+      assert.deepEqual([...race.started].sort(), ['openai', 'openrouter'], 'both requests start at once');
+      assert.deepEqual(race.aborted, [slow]);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test('a failing provider falls through to the other; both failing gives 502 naming both', async () => {
+  const fallThrough = racingFetch({ openai: { ms: 5, ok: false }, openrouter: { ms: 60, ok: true } });
+  const h = await serve({ config: BOTH_KEYS, fetch: fallThrough.fetch });
+  try {
+    const res = await postWav(h.base, wav(100));
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).provider, 'openrouter');
+    assert.deepEqual(fallThrough.aborted, []);
+  } finally {
+    await h.close();
+  }
+  const bothDown = racingFetch({ openai: { ms: 5, ok: false }, openrouter: { ms: 20, ok: false } });
+  const h2 = await serve({ config: BOTH_KEYS, fetch: bothDown.fetch });
+  try {
+    const res = await postWav(h2.base, wav(100));
+    const text = await res.text();
+    assert.equal(res.status, 502);
+    assert.match(JSON.parse(text).error, /OpenAI: OpenAI answered 500: openai down; OpenRouter: OpenRouter answered 500: openrouter down|OpenRouter: .*; OpenAI: /);
+    assert.ok(!text.includes('long-lived'));
+  } finally {
+    await h2.close();
+  }
+});
+
+test('with both keys each provider gets its own model id', () => {
+  const routes = transcribeRoutes(readConfig({ OPENAI_API_KEY: 'k', OPENROUTER_API_KEY: 'o' }));
+  assert.deepEqual(routes.map((r) => [r.provider, r.model]), [
+    ['openai', 'gpt-4o-transcribe'],
+    ['openrouter', 'openai/gpt-4o-transcribe'],
+  ]);
+  assert.equal(transcribeRoutes(readConfig({ OPENAI_API_KEY: 'k' })).length, 1);
 });
 
 // Reads SSE frames from a fetch body until `count` events have arrived, failing
