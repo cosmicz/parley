@@ -187,6 +187,8 @@ async function main(): Promise<void> {
     : segmented
     ? new SegmentStt(
         {
+          // Drop silent edges (calibration, waiting) using the live speech threshold.
+          trimSilenceRms: () => vad.threshold,
           transcribe: async (wav) => {
             const body = await getJson<{ text: string; sttMs: number }>('/api/transcribe', {
               method: 'POST',
