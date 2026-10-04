@@ -1,5 +1,5 @@
 {
-  "name": "esl-coach",
+  "name": "parley",
   "private": true,
   "version": "0.1.0",
   "description": "Live language-practice coach for Even Realities G2: live transcript and a pause-triggered continuation in the language you practise (French by default).",

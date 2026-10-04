@@ -16,8 +16,9 @@ said, including the words you slipped into.
   English language hints.
 - On a pause or a tap, the server asks a model through OpenRouter (Claude
   Haiku 4.5 by default) for one short continuation in
-  the practised language, or an explicit abstain. It never invents names,
-  times or reasons you did not say.
+  the practised language, or an explicit abstain. The prompt instructs the
+  model not to invent names, times or reasons you did not say; this is a
+  design rule, checked in rehearsal rather than guaranteed.
 - Speaking again clears the suggestion. A late answer never replaces newer
   speech.
 - A projector page (`/companion.html`) mirrors the app state for an audience,
