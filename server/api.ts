@@ -9,8 +9,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { providerAccess, publicConfig, type ServerConfig } from './config.ts';
 import { suggest } from './coach.ts';
 import { isWav, transcribe } from './transcribe.ts';
+import { createRealtimeToken, REALTIME_MODEL, REALTIME_RATE } from './realtime.ts';
 import { EventHub } from './events.ts';
-import type { SttTokenResponse, SuggestRequest, SuggestResponse, TranscribeResponse } from './contract.ts';
+import type { RealtimeTokenResponse, SttTokenResponse, SuggestRequest, SuggestResponse, TranscribeResponse } from './contract.ts';
 
 export const SONIOX_TEMP_KEY_URL = 'https://api.soniox.com/v1/auth/temporary-api-key';
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -77,6 +78,26 @@ export function createApi(deps: ApiDeps): Middleware {
           throw new HttpError(502, 'speech-to-text token response was malformed');
         }
         sendJson(res, 200, { apiKey: body.api_key, expiresAt: body.expires_at } satisfies SttTokenResponse);
+      },
+    },
+
+    '/api/realtime-token': {
+      GET: async (_req, res) => {
+        const apiKey = deps.config.openAiApiKey;
+        if (!deps.config.realtimeStt || !apiKey) throw new HttpError(503, 'realtime transcription needs REALTIME_STT=1 and OPENAI_API_KEY');
+        let token;
+        try {
+          token = await createRealtimeToken({ apiKey, fetch: fetchImpl }, deps.config);
+        } catch (err) {
+          log(`realtime token failed: ${errorMessage(err)}`);
+          throw new HttpError(502, `realtime token failed: ${errorMessage(err)}`);
+        }
+        sendJson(res, 200, {
+          apiKey: token.value,
+          expiresAt: token.expiresAt,
+          model: REALTIME_MODEL,
+          sampleRate: REALTIME_RATE,
+        } satisfies RealtimeTokenResponse);
       },
     },
 

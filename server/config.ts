@@ -10,6 +10,8 @@ export interface ServerConfig extends Omit<ConfigResponse, 'sttMode'> {
   sonioxApiKey?: string;
   openRouterApiKey?: string;
   openAiApiKey?: string;
+  /** REALTIME_STT=1: stream to OpenAI realtime transcription (spike, pahax-g2x). */
+  realtimeStt: boolean;
 }
 
 export type ProviderAccess = { provider: Exclude<Provider, 'none'>; apiKey: string };
@@ -47,6 +49,7 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
     openRouterApiKey,
     openAiApiKey,
+    realtimeStt: nonEmpty(env.REALTIME_STT) === '1',
   };
 }
 
@@ -71,6 +74,7 @@ export function publicConfig(config: ServerConfig): ConfigResponse {
 /** Soniox streaming wins when both keys are present. */
 export function sttMode(config: ServerConfig): SttMode {
   if (config.sonioxApiKey) return 'soniox';
+  if (config.realtimeStt && config.openAiApiKey) return 'realtime';
   if (providerAccess(config)) return 'segments';
   return 'none';
 }

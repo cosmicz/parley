@@ -71,6 +71,7 @@ npm run simulate
 
 `.env.local` (never committed): `SONIOX_API_KEY`, `OPENROUTER_API_KEY`,
 `OPENAI_API_KEY`, `COACH_MODEL`, `OPENAI_COACH_MODEL`, `TRANSCRIBE_MODEL`,
+`REALTIME_STT` (experimental, `1` to stream to OpenAI realtime transcription),
 `PRACTICE_LANGUAGE` (default `fr`), `FALLBACK_LANGUAGE` (default `en`).
 
 Suggestions and clip transcription use OpenRouter when `OPENROUTER_API_KEY`
@@ -80,7 +81,9 @@ is set, otherwise OpenAI directly when `OPENAI_API_KEY` is set, all with plain
 `gpt-4o-mini-transcribe` (an OpenRouter slug in `COACH_MODEL` or
 `TRANSCRIBE_MODEL` is ignored there). `/api/config` reports `provider`
 (`openrouter`, `openai` or `none`) and `sttMode`: `soniox` (streaming) when
-`SONIOX_API_KEY` is set, otherwise `segments` (speech clips posted to
+`SONIOX_API_KEY` is set, otherwise `realtime` when `REALTIME_STT=1` and
+`OPENAI_API_KEY` are set (the browser gets an ephemeral key from
+`/api/realtime-token`), otherwise `segments` (speech clips posted to
 `/api/transcribe`) when a provider key is set, otherwise `none`.
 
 ## License
