@@ -14,7 +14,8 @@ said, including the words you slipped into.
   900 ms. A temple tap asks for help at any time.
 - Soniox real-time speech-to-text produces the transcript, with French and
   English language hints.
-- On a pause or a tap, the server asks Claude for one short continuation in
+- On a pause or a tap, the server asks a model through OpenRouter (Claude
+  Haiku 4.5 by default) for one short continuation in
   the practised language, or an explicit abstain. It never invents names,
   times or reasons you did not say.
 - Speaking again clears the suggestion. A late answer never replaces newer
