@@ -5,16 +5,16 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createApi, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
-import type { MessagesClient, ModelReply } from '../server/coach.ts';
+import { OPENROUTER_CHAT_URL } from '../server/coach.ts';
 import { readConfig, type ServerConfig } from '../server/config.ts';
 import { EventHub } from '../server/events.ts';
 
 const CONFIG: ServerConfig = {
   practiceLanguage: 'fr',
   fallbackLanguage: 'en',
-  model: 'claude-haiku-4-5',
+  model: 'anthropic/claude-haiku-4.5',
   sonioxApiKey: 'soniox-long-lived',
-  anthropicApiKey: 'anthropic-long-lived',
+  openRouterApiKey: 'openrouter-long-lived',
 };
 
 interface Harness {
@@ -40,21 +40,30 @@ async function serve(overrides: Partial<ApiDeps> = {}): Promise<Harness> {
   };
 }
 
-function fakeModel(reply: ModelReply | Error): { client: () => Promise<MessagesClient>; calls: unknown[] } {
-  const calls: unknown[] = [];
-  const client: MessagesClient = {
-    messages: {
-      create: async (params) => {
-        calls.push(params);
-        if (reply instanceof Error) throw reply;
-        return reply;
-      },
-    },
-  };
-  return { client: async () => client, calls };
+interface Captured {
+  url: string;
+  headers: Record<string, string>;
+  body: { model: string; max_tokens: number; messages: { role: string; content: string }[] } & Record<string, unknown>;
 }
 
-const textReply = (text: string): ModelReply => ({ content: [{ type: 'text', text }], stop_reason: 'end_turn' });
+// A fake OpenRouter: answers every request with `status` and `reply`, or
+// rejects like a network failure when given an Error.
+function fakeOpenRouter(reply: unknown, status = 200): { fetch: typeof fetch; calls: Captured[] } {
+  const calls: Captured[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) });
+    if (reply instanceof Error) throw reply;
+    return new Response(JSON.stringify(reply), { status, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  return { fetch: fakeFetch, calls };
+}
+
+const completion = (content: string | null, finish_reason = 'stop', extra: Record<string, unknown> = {}) => ({
+  id: 'gen-1',
+  object: 'chat.completion',
+  model: 'anthropic/claude-haiku-4.5',
+  choices: [{ index: 0, finish_reason, native_finish_reason: 'end_turn', message: { role: 'assistant', content }, ...extra }],
+});
 
 async function postSuggest(base: string, body: unknown = { transcript: 'Je voudrais un appointment', trigger: 'pause' }) {
   const res = await fetch(`${base}/api/suggest`, { method: 'POST', body: JSON.stringify(body) });
@@ -62,11 +71,15 @@ async function postSuggest(base: string, body: unknown = { transcript: 'Je voudr
 }
 
 test('config comes from the environment with defaults and never exposes keys', async () => {
-  assert.deepEqual(
-    { ...readConfig({}), sonioxApiKey: undefined, anthropicApiKey: undefined },
-    { practiceLanguage: 'fr', fallbackLanguage: 'en', model: 'claude-haiku-4-5', sonioxApiKey: undefined, anthropicApiKey: undefined },
-  );
-  const config = readConfig({ PRACTICE_LANGUAGE: 'es', FALLBACK_LANGUAGE: 'ro', COACH_MODEL: 'm', SONIOX_API_KEY: 's', ANTHROPIC_API_KEY: 'a' });
+  assert.deepEqual(readConfig({ ANTHROPIC_API_KEY: 'retired' }), {
+    practiceLanguage: 'fr',
+    fallbackLanguage: 'en',
+    model: 'anthropic/claude-haiku-4.5',
+    sonioxApiKey: undefined,
+    openRouterApiKey: undefined,
+  });
+  const config = readConfig({ PRACTICE_LANGUAGE: 'es', FALLBACK_LANGUAGE: 'ro', COACH_MODEL: 'm', SONIOX_API_KEY: 's', OPENROUTER_API_KEY: 'o' });
+  assert.equal(config.openRouterApiKey, 'o');
   const h = await serve({ config });
   try {
     const res = await fetch(`${h.base}/api/config`);
@@ -134,37 +147,40 @@ test('stt-token maps an upstream failure to 502', async () => {
   }
 });
 
-test('suggest sends the configured prompt and returns the parsed suggestion with model time', async () => {
-  const model = fakeModel(textReply('{"suggestion": "un rendez-vous"}'));
+test('suggest sends the configured prompt to OpenRouter and returns the parsed suggestion with model time', async () => {
+  const router = fakeOpenRouter(completion('{"suggestion": "un rendez-vous"}'));
   let clock = 1000;
-  const h = await serve({ coachClient: model.client, now: () => (clock += 420) });
+  const h = await serve({ fetch: router.fetch, now: () => (clock += 420) });
   try {
     const { status, body } = await postSuggest(h.base);
     assert.equal(status, 200);
     assert.deepEqual(body, { result: { kind: 'suggestion', text: 'un rendez-vous' }, modelMs: 420 });
-    const params = model.calls[0] as { model: string; max_tokens: number; system: string; messages: { role: string; content: string }[] };
-    assert.equal(params.model, 'claude-haiku-4-5');
-    assert.equal(params.max_tokens, 256);
-    assert.match(params.system, /practising French and is stronger in English/);
-    assert.equal(params.messages.length, 1);
-    assert.equal(params.messages[0].role, 'user');
-    assert.match(params.messages[0].content, /Trigger: pause/);
-    assert.match(params.messages[0].content, /Je voudrais un appointment/);
-    assert.ok(!('thinking' in params), 'no thinking parameter');
+    assert.equal(router.calls.length, 1);
+    const call = router.calls[0];
+    assert.equal(call.url, OPENROUTER_CHAT_URL);
+    assert.equal(call.headers.Authorization, 'Bearer openrouter-long-lived');
+    assert.equal(call.headers['X-OpenRouter-Title'], 'Parley');
+    assert.equal(call.body.model, 'anthropic/claude-haiku-4.5');
+    assert.equal(call.body.max_tokens, 256);
+    assert.deepEqual(call.body.messages.map((m) => m.role), ['system', 'user']);
+    assert.match(call.body.messages[0].content, /practising French and is stronger in English/);
+    assert.match(call.body.messages[1].content, /Trigger: pause/);
+    assert.match(call.body.messages[1].content, /Je voudrais un appointment/);
   } finally {
     await h.close();
   }
 });
 
-test('suggest maps abstain, invalid output and a refusal', async () => {
-  const cases: [ModelReply, unknown][] = [
-    [textReply('{"abstain": true}'), { kind: 'abstain' }],
-    [textReply('Sure! Try saying "un rendez-vous".'), { kind: 'invalid', reason: 'not JSON' }],
-    [{ content: [{ type: 'text', text: '{"suggestion": "x"}' }], stop_reason: 'refusal' }, { kind: 'abstain' }],
-    [{ content: [], stop_reason: 'refusal' }, { kind: 'abstain' }],
+test('suggest maps abstain, invalid output, empty content, a content filter and a refusal', async () => {
+  const cases: [unknown, unknown][] = [
+    [completion('{"abstain": true}'), { kind: 'abstain' }],
+    [completion('Sure! Try saying "un rendez-vous".'), { kind: 'invalid', reason: 'not JSON' }],
+    [completion(null), { kind: 'invalid', reason: 'not JSON' }],
+    [completion('{"suggestion": "x"}', 'content_filter'), { kind: 'abstain' }],
+    [completion('', 'stop', { native_finish_reason: 'refusal' }), { kind: 'abstain' }],
   ];
   for (const [reply, expected] of cases) {
-    const h = await serve({ coachClient: fakeModel(reply).client });
+    const h = await serve({ fetch: fakeOpenRouter(reply).fetch });
     try {
       const { status, body } = await postSuggest(h.base, { transcript: 'euh', trigger: 'tap' });
       assert.equal(status, 200);
@@ -175,8 +191,9 @@ test('suggest maps abstain, invalid output and a refusal', async () => {
   }
 });
 
-test('suggest rejects a bad body, reports a missing key and maps model errors to 502', async () => {
-  const ok = await serve({ coachClient: fakeModel(textReply('{"abstain": true}')).client });
+test('suggest rejects a bad body and reports a missing key without calling OpenRouter', async () => {
+  const router = fakeOpenRouter(completion('{"abstain": true}'));
+  const ok = await serve({ fetch: router.fetch });
   try {
     assert.equal((await postSuggest(ok.base, { transcript: 'x', trigger: 'shout' })).status, 400);
     assert.equal((await postSuggest(ok.base, { trigger: 'tap' })).status, 400);
@@ -186,22 +203,36 @@ test('suggest rejects a bad body, reports a missing key and maps model errors to
     await ok.close();
   }
 
-  const noKey = await serve({ coachClient: undefined });
+  const noKey = await serve({ config: { ...CONFIG, openRouterApiKey: undefined }, fetch: router.fetch });
   try {
     const { status, body } = await postSuggest(noKey.base);
     assert.equal(status, 503);
-    assert.match(body.error, /ANTHROPIC_API_KEY/);
+    assert.equal(body.error, 'OPENROUTER_API_KEY is not configured');
   } finally {
     await noKey.close();
   }
+  assert.equal(router.calls.length, 0);
+});
 
-  const failing = await serve({ coachClient: fakeModel(Object.assign(new Error('overloaded'), { status: 529 })).client });
-  try {
-    const { status, body } = await postSuggest(failing.base);
-    assert.equal(status, 502);
-    assert.match(body.error, /overloaded/);
-  } finally {
-    await failing.close();
+test('suggest maps HTTP errors, in-band errors, malformed replies and network failures to 502 without the key', async () => {
+  const cases: [unknown, number, RegExp][] = [
+    [{ error: { code: 402, message: 'Insufficient credits' } }, 402, /402: Insufficient credits/],
+    [{ error: { code: 429, message: 'Rate limited' } }, 429, /429: Rate limited/],
+    [completion(null, 'error', { error: { code: 502, message: 'Provider overloaded' } }), 200, /Provider overloaded/],
+    [{ object: 'chat.completion', choices: [] }, 200, /no choices/],
+    [new TypeError('fetch failed'), 0, /request failed: fetch failed/],
+  ];
+  for (const [reply, status, pattern] of cases) {
+    const h = await serve({ fetch: fakeOpenRouter(reply, status).fetch });
+    try {
+      const res = await fetch(`${h.base}/api/suggest`, { method: 'POST', body: JSON.stringify({ transcript: 'x', trigger: 'tap' }) });
+      const text = await res.text();
+      assert.equal(res.status, 502, `reply ${JSON.stringify(reply)}`);
+      assert.match(JSON.parse(text).error, pattern);
+      assert.ok(!text.includes('openrouter-long-lived'), 'long-lived key leaked to the client');
+    } finally {
+      await h.close();
+    }
   }
 });
 

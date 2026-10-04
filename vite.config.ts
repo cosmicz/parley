@@ -7,18 +7,13 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import { createApi } from './server/api.ts';
-import { createAnthropicClient } from './server/coach.ts';
 import { readConfig } from './server/config.ts';
 import { EventHub } from './server/events.ts';
 
 function parleyApi(env: Record<string, string>): Plugin {
   const config = readConfig(env);
   const hub = new EventHub();
-  const api = createApi({
-    config,
-    hub,
-    coachClient: config.anthropicApiKey ? createAnthropicClient(config.anthropicApiKey) : undefined,
-  });
+  const api = createApi({ config, hub });
   return {
     name: 'parley-api',
     configureServer(server) {
