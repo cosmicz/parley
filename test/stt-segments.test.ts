@@ -56,11 +56,12 @@ test('overlapping flushes preserve request and transcript order', async () => {
   assert.equal(releases.length, 1, 'second request waits for first');
   releases[0](' bonjour ');
   await first;
+  assert.deepEqual(texts, [], 'older clip cannot release the coach awaiting the second clip');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(releases.length, 2);
   releases[1](' tout le monde ');
   await second;
-  assert.deepEqual(texts, ['bonjour', 'bonjour tout le monde']);
+  assert.deepEqual(texts, ['bonjour tout le monde']);
 });
 
 test('transcription errors release the coach and later clips still work', async () => {
@@ -76,6 +77,20 @@ test('transcription errors release the coach and later clips still work', async 
   await stt.flush();
   assert.deepEqual(errors, [{ type: 'transcribe', message: 'service unavailable' }]);
   assert.deepEqual(texts, ['', 'Salut']);
+});
+
+test('a short newer flush releases the coach after the older clip completes', async () => {
+  let release: (text: string) => void = () => {};
+  const { stt, texts } = setup(() => new Promise(resolve => { release = resolve; }));
+  await stt.start();
+  stt.sendPcm(pcm(400));
+  const first = stt.flush();
+  const latest = stt.flush(); // a tap while the first clip is in flight
+  await new Promise(resolve => setImmediate(resolve));
+  release('bonjour');
+  await first;
+  await latest;
+  assert.deepEqual(texts, ['bonjour']);
 });
 
 test('stop/start drops buffered audio and stale in-flight results', async () => {
