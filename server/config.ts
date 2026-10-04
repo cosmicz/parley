@@ -40,7 +40,9 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
       ? (nonEmpty(env.OPENAI_COACH_MODEL) ?? (isOpenRouterSlug(coachModel) ? undefined : coachModel) ?? 'gpt-4.1-mini')
       : (coachModel ?? 'anthropic/claude-haiku-4.5'),
     transcribeModel: openAi
-      ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-mini-transcribe')
+      // Measured live 14:58 on a 3.6 s French clip: gpt-4o-transcribe 1.3-2.0 s and
+      // accurate; gpt-4o-mini-transcribe 4.4-4.8 s; whisper-1 1.6-1.8 s but mangles fillers.
+      ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-transcribe')
       : (transcribeModel ?? 'openai/gpt-4o-mini-transcribe'),
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
     openRouterApiKey,
