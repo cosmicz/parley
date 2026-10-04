@@ -111,7 +111,8 @@ test('the provider is OpenRouter when its key is set, else OpenAI with OpenAI mo
   const openAi = readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'anthropic/claude-haiku-4.5', TRANSCRIBE_MODEL: 'openai/gpt-4o-mini-transcribe' });
   assert.equal(openAi.provider, 'openai');
   assert.equal(openAi.model, 'gpt-4.1-mini');
-  assert.equal(openAi.transcribeModel, 'gpt-4o-mini-transcribe');
+  // The OpenRouter slug is ignored; the OpenAI default applies (gpt-4o-transcribe since 15:00).
+  assert.equal(openAi.transcribeModel, 'gpt-4o-transcribe');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1' }).model, 'gpt-4.1');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1', OPENAI_COACH_MODEL: 'gpt-4o' }).model, 'gpt-4o');
   assert.equal(readConfig({ OPENAI_API_KEY: 'k', TRANSCRIBE_MODEL: 'gpt-4o-transcribe' }).transcribeModel, 'gpt-4o-transcribe');
