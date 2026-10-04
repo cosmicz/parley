@@ -35,7 +35,7 @@ export interface SttTokenResponse {
 export interface TranscribeResponse {
   text: string;
   sttMs: number;
-  /** Which provider answered first (pahax-k4s races both when both keys are set). */
+  /** Which provider answered (pahax-k4s hedges when both keys are set). */
   provider: Exclude<Provider, 'none'>;
 }
 
@@ -58,6 +58,8 @@ export interface SuggestRequest {
 export interface SuggestResponse {
   result: SuggestResult;
   modelMs: number;
+  /** Which provider answered (pahax-k4s hedges when both keys are set). */
+  provider: Exclude<Provider, 'none'>;
 }
 
 export type Phase = 'idle' | 'listening' | 'thinking' | 'suggesting';

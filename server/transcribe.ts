@@ -17,6 +17,7 @@
 
 import { languageName } from '../src/suggest-core.ts';
 import { providerLabel } from './coach.ts';
+import { hedge, HEDGE_MS } from './hedge.ts';
 import type { ProviderAccess } from './config.ts';
 import { OPENAI_API, openAiHeaders } from './openai.ts';
 import { OPENROUTER_API, openRouterHeaders, upstreamErrorText } from './openrouter.ts';
@@ -82,38 +83,27 @@ export async function transcribe(access: TranscribeAccess, call: TranscribeCall)
 }
 
 /**
- * Sends the clip to every route at once and returns the first success; the
- * other requests are aborted. Fails only when every route failed.
+ * Hedged transcription: the first route (the preferred provider) starts at
+ * once, the next after `hedgeMs` without an answer; the first success wins.
+ * Fails only when every route failed.
  */
-export function transcribeFirst(
+export async function transcribeFirst(
   routes: Array<TranscribeAccess & { model: string }>,
   call: Omit<TranscribeCall, 'model'>,
+  hedgeMs = HEDGE_MS,
 ): Promise<{ text: string; sttMs: number; provider: ProviderAccess['provider'] }> {
-  if (routes.length === 0) return Promise.reject(new TranscribeError('no transcription route'));
-  const controllers = routes.map(() => new AbortController());
-  const failures: string[] = [];
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    routes.forEach((route, i) => {
-      transcribe({ ...route, signal: controllers[i].signal }, { ...call, model: route.model }).then(
-        (result) => {
-          if (settled) return;
-          settled = true;
-          controllers.forEach((controller, j) => {
-            if (j !== i) controller.abort();
-          });
-          resolve({ ...result, provider: route.provider });
-        },
-        (err: unknown) => {
-          failures.push(`${providerLabel(route.provider)}: ${err instanceof Error ? err.message : String(err)}`);
-          if (!settled && failures.length === routes.length) {
-            settled = true;
-            reject(new TranscribeError(failures.join('; ')));
-          }
-        },
-      );
-    });
-  });
+  try {
+    const { value, index } = await hedge(
+      routes.map((route) => ({
+        label: providerLabel(route.provider),
+        run: (signal: AbortSignal) => transcribe({ ...route, signal }, { ...call, model: route.model }),
+      })),
+      hedgeMs,
+    );
+    return { ...value, provider: routes[index].provider };
+  } catch (err) {
+    throw new TranscribeError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 // No language field, for the same reason as above.

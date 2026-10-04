@@ -6,8 +6,9 @@
 // model results.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { providerAccess, publicConfig, transcribeRoutes, type ServerConfig } from './config.ts';
-import { suggest } from './coach.ts';
+import { publicConfig, suggestRoutes, transcribeRoutes, type ServerConfig } from './config.ts';
+import { providerLabel, suggest } from './coach.ts';
+import { hedge, HEDGE_MS } from './hedge.ts';
 import { isWav, transcribeFirst } from './transcribe.ts';
 import { createRealtimeToken, REALTIME_MODEL, REALTIME_RATE } from './realtime.ts';
 import { EventHub } from './events.ts';
@@ -104,14 +105,22 @@ export function createApi(deps: ApiDeps): Middleware {
     '/api/suggest': {
       POST: async (req, res) => {
         const input = parseSuggestRequest(await readJson(req));
-        const access = providerAccess(deps.config);
-        if (!access) throw new HttpError(503, NO_PROVIDER);
+        const routes = suggestRoutes(deps.config);
+        if (routes.length === 0) throw new HttpError(503, NO_PROVIDER);
         let response: SuggestResponse;
         try {
-          response = await suggest(
-            { ...access, fetch: fetchImpl, now: deps.now },
-            { ...input, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage, model: deps.config.model },
+          const { value, index } = await hedge(
+            routes.map((route) => ({
+              label: providerLabel(route.provider),
+              run: (signal: AbortSignal) =>
+                suggest(
+                  { provider: route.provider, apiKey: route.apiKey, fetch: fetchImpl, now: deps.now, signal },
+                  { ...input, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage, model: route.model },
+                ),
+            })),
+            deps.config.hedgeMs ?? HEDGE_MS,
           );
+          response = { ...value, provider: routes[index].provider };
         } catch (err) {
           log(`model call failed: ${errorMessage(err)}`);
           throw new HttpError(502, `model call failed: ${errorMessage(err)}`);
@@ -133,6 +142,7 @@ export function createApi(deps: ApiDeps): Middleware {
           response = await transcribeFirst(
             routes.map((route) => ({ ...route, fetch: fetchImpl, now: deps.now })),
             { wav, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage },
+            deps.config.hedgeMs ?? HEDGE_MS,
           );
         } catch (err) {
           log(`transcription failed: ${errorMessage(err)}`);

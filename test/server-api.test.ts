@@ -80,6 +80,8 @@ test('config comes from the environment with defaults and never exposes keys', a
     provider: 'none',
     transcribeProvider: 'none',
     openRouterTranscribeModel: 'openai/gpt-4o-transcribe',
+    openAiCoachModel: 'gpt-4.1-mini',
+    hedgeMs: 2500,
     model: 'anthropic/claude-haiku-4.5',
     transcribeModel: 'openai/gpt-4o-transcribe',
     sonioxApiKey: undefined,
@@ -209,7 +211,7 @@ test('suggest sends the configured prompt to OpenRouter and returns the parsed s
   try {
     const { status, body } = await postSuggest(h.base);
     assert.equal(status, 200);
-    assert.deepEqual(body, { result: { kind: 'suggestion', text: 'un rendez-vous' }, modelMs: 420 });
+    assert.deepEqual(body, { result: { kind: 'suggestion', text: 'un rendez-vous' }, modelMs: 420, provider: 'openrouter' });
     assert.equal(router.calls.length, 1);
     const call = router.calls[0];
     assert.equal(call.url, 'https://openrouter.ai/api/v1/chat/completions');
@@ -576,40 +578,54 @@ function racingFetch(plan: Record<'openai' | 'openrouter', { ms: number; ok: boo
 
 const BOTH_KEYS: ServerConfig = {
   ...OPENAI_CONFIG,
+  hedgeMs: 50,
+  provider: 'openrouter',
+  model: 'anthropic/claude-haiku-4.5',
+  openAiCoachModel: 'gpt-4.1-mini',
   transcribeProvider: 'openai',
   transcribeModel: 'gpt-4o-transcribe',
   openRouterTranscribeModel: 'openai/gpt-4o-transcribe',
   openRouterApiKey: 'openrouter-long-lived',
 };
 
-test('with both keys, transcription races OpenAI and OpenRouter; the first success wins and the loser is aborted', async () => {
-  for (const [fast, slow] of [['openai', 'openrouter'], ['openrouter', 'openai']] as const) {
-    const plan = { [fast]: { ms: 10, ok: true }, [slow]: { ms: 500, ok: true } } as Record<'openai' | 'openrouter', { ms: number; ok: boolean }>;
-    const race = racingFetch(plan);
-    const h = await serve({ config: BOTH_KEYS, fetch: race.fetch });
-    try {
-      const startedAt = performance.now();
-      const res = await postWav(h.base, wav(100));
-      const body = await res.json();
-      assert.equal(res.status, 200);
-      assert.equal(body.provider, fast);
-      assert.equal(body.text, `from ${fast}`);
-      assert.ok(performance.now() - startedAt < 400, 'answered without waiting for the slow provider');
-      assert.deepEqual([...race.started].sort(), ['openai', 'openrouter'], 'both requests start at once');
-      assert.deepEqual(race.aborted, [slow]);
-    } finally {
-      await h.close();
-    }
+test('with both keys, transcription is hedged: OpenAI first, OpenRouter only after the hedge delay', async () => {
+  // Preferred answers in time: the hedge never starts.
+  const quick = racingFetch({ openai: { ms: 10, ok: true }, openrouter: { ms: 10, ok: true } });
+  const h = await serve({ config: BOTH_KEYS, fetch: quick.fetch });
+  try {
+    const res = await postWav(h.base, wav(100));
+    assert.equal((await res.json()).provider, 'openai');
+    assert.deepEqual(quick.started, ['openai']);
+  } finally {
+    await h.close();
+  }
+  // Preferred is slow: the hedge starts after 50 ms, wins, and OpenAI is aborted.
+  const slow = racingFetch({ openai: { ms: 2000, ok: true }, openrouter: { ms: 10, ok: true } });
+  const h2 = await serve({ config: BOTH_KEYS, fetch: slow.fetch });
+  try {
+    const startedAt = performance.now();
+    const res = await postWav(h2.base, wav(100));
+    const body = await res.json();
+    const elapsed = performance.now() - startedAt;
+    assert.equal(body.provider, 'openrouter');
+    assert.equal(body.text, 'from openrouter');
+    assert.ok(elapsed >= 45 && elapsed < 1000, `answered after ${Math.round(elapsed)} ms`);
+    assert.deepEqual(slow.started, ['openai', 'openrouter']);
+    assert.deepEqual(slow.aborted, ['openai']);
+  } finally {
+    await h2.close();
   }
 });
 
-test('a failing provider falls through to the other; both failing gives 502 naming both', async () => {
-  const fallThrough = racingFetch({ openai: { ms: 5, ok: false }, openrouter: { ms: 60, ok: true } });
-  const h = await serve({ config: BOTH_KEYS, fetch: fallThrough.fetch });
+test('a failing provider falls through to the other at once; both failing gives 502 naming both', async () => {
+  const fallThrough = racingFetch({ openai: { ms: 5, ok: false }, openrouter: { ms: 5, ok: true } });
+  const h = await serve({ config: { ...BOTH_KEYS, hedgeMs: 5000 }, fetch: fallThrough.fetch });
   try {
+    const startedAt = performance.now();
     const res = await postWav(h.base, wav(100));
     assert.equal(res.status, 200);
     assert.equal((await res.json()).provider, 'openrouter');
+    assert.ok(performance.now() - startedAt < 1000, 'the hedge starts on failure, not after the delay');
     assert.deepEqual(fallThrough.aborted, []);
   } finally {
     await h.close();
@@ -624,6 +640,51 @@ test('a failing provider falls through to the other; both failing gives 502 nami
     assert.ok(!text.includes('long-lived'));
   } finally {
     await h2.close();
+  }
+});
+
+test('with both keys, suggestions prefer OpenRouter Haiku and hedge to OpenAI gpt-4.1-mini', async () => {
+  const calls: { url: string; body: any }[] = [];
+  const hedgedFetch = (openRouterMs: number) =>
+    (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(init.body as string) });
+      const ms = url.startsWith('https://openrouter.ai') ? openRouterMs : 10;
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new DOMException('aborted', 'AbortError'));
+        };
+        const timer = setTimeout(() => {
+          init.signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, ms);
+        init.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      return new Response(JSON.stringify(completion('{"suggestion": "un rendez-vous"}')), { status: 200 });
+    }) as typeof fetch;
+
+  const quick = await serve({ config: BOTH_KEYS, fetch: hedgedFetch(5) });
+  try {
+    const { body } = await postSuggest(quick.base);
+    assert.equal(body.provider, 'openrouter');
+    assert.deepEqual(calls.map((c) => c.body.model), ['anthropic/claude-haiku-4.5']);
+  } finally {
+    await quick.close();
+  }
+  calls.length = 0;
+  const slow = await serve({ config: BOTH_KEYS, fetch: hedgedFetch(2000) });
+  try {
+    const { status, body } = await postSuggest(slow.base);
+    assert.equal(status, 200);
+    assert.equal(body.provider, 'openai');
+    assert.deepEqual(body.result, { kind: 'suggestion', text: 'un rendez-vous' });
+    assert.deepEqual(calls.map((c) => [c.url, c.body.model]), [
+      ['https://openrouter.ai/api/v1/chat/completions', 'anthropic/claude-haiku-4.5'],
+      ['https://api.openai.com/v1/chat/completions', 'gpt-4.1-mini'],
+    ]);
+    assert.equal(calls[1].body.max_completion_tokens, 256);
+  } finally {
+    await slow.close();
   }
 });
 

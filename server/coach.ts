@@ -35,6 +35,8 @@ export interface SuggestCall {
 export interface ModelAccess extends ProviderAccess {
   fetch: typeof fetch;
   now?: () => number;
+  /** Aborts the request, e.g. when the hedge already answered. */
+  signal?: AbortSignal;
 }
 
 export const providerLabel = (provider: ProviderAccess['provider']): string => (provider === 'openai' ? 'OpenAI' : 'OpenRouter');
@@ -58,7 +60,7 @@ export async function suggest(access: ModelAccess, call: SuggestCall): Promise<{
         // OpenAI deprecated max_tokens for max_completion_tokens.
         [openAi ? 'max_completion_tokens' : 'max_tokens']: MAX_TOKENS,
       }),
-      signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+      signal: access.signal ? AbortSignal.any([AbortSignal.timeout(MODEL_TIMEOUT_MS), access.signal]) : AbortSignal.timeout(MODEL_TIMEOUT_MS),
     });
   } catch (err) {
     throw new ModelCallError(`request failed: ${err instanceof Error ? err.message : String(err)}`);

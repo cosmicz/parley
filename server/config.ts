@@ -7,8 +7,12 @@ import type { ConfigResponse, Provider, SttMode } from './contract.ts';
 export interface ServerConfig extends Omit<ConfigResponse, 'sttMode'> {
   /** Model id for POST /api/transcribe, in the transcription provider's naming. */
   transcribeModel: string;
-  /** OpenRouter's model when both keys are set and transcription races both. */
+  /** OpenRouter's model when both keys are set and transcription hedges. */
   openRouterTranscribeModel?: string;
+  /** OpenAI's model when both keys are set and suggestions hedge to OpenAI. */
+  openAiCoachModel?: string;
+  /** HEDGE_MS: wait for the preferred provider before also asking the other. */
+  hedgeMs?: number;
   /**
    * Transcription prefers OpenAI direct whenever its key is set: live at 15:23
    * the same clip took 7.7-8.2 s through OpenRouter vs 2.1 s direct (arc-7qwo).
@@ -57,6 +61,8 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
       // Live via OpenRouter 15:16: openai/gpt-4o-transcribe 1.2-2.0 s, accurate;
       // openai/gpt-4o-mini-transcribe 2.3-2.8 s and turned "euh" into "you"/"U.".
       : (transcribeModel ?? 'openai/gpt-4o-transcribe'),
+    openAiCoachModel: nonEmpty(env.OPENAI_COACH_MODEL) ?? (isOpenRouterSlug(coachModel) ? undefined : coachModel) ?? 'gpt-4.1-mini',
+    hedgeMs: Number(nonEmpty(env.HEDGE_MS) ?? 2500),
     openRouterTranscribeModel: isOpenRouterSlug(transcribeModel)
       ? transcribeModel
       : `openai/${transcribeModel ?? 'gpt-4o-transcribe'}`,
@@ -83,9 +89,9 @@ export function transcribeAccess(config: ServerConfig): ProviderAccess | null {
 export type TranscribeRoute = ProviderAccess & { model: string };
 
 /**
- * Where POST /api/transcribe sends a clip. With both keys, OpenAI direct and
- * OpenRouter race (pahax-k4s): live latency on either swung from under 1 s to
- * over 10 s at 15:45, so the first success wins.
+ * Where POST /api/transcribe sends a clip, preferred first. With both keys,
+ * OpenAI direct is preferred and OpenRouter is the hedge (pahax-k4s): live
+ * latency on either swung from under 1 s to over 10 s at 15:45.
  */
 export function transcribeRoutes(config: ServerConfig): TranscribeRoute[] {
   if (config.openAiApiKey && config.openRouterApiKey) {
@@ -96,6 +102,21 @@ export function transcribeRoutes(config: ServerConfig): TranscribeRoute[] {
   }
   const access = transcribeAccess(config);
   return access ? [{ ...access, model: config.transcribeModel }] : [];
+}
+
+/**
+ * Where POST /api/suggest goes, preferred first: with both keys, OpenRouter
+ * (Haiku repairs better) and OpenAI as the hedge (pahax-k4s).
+ */
+export function suggestRoutes(config: ServerConfig): TranscribeRoute[] {
+  if (config.openAiApiKey && config.openRouterApiKey) {
+    return [
+      { provider: 'openrouter', apiKey: config.openRouterApiKey, model: config.provider === 'openrouter' ? config.model : 'anthropic/claude-haiku-4.5' },
+      { provider: 'openai', apiKey: config.openAiApiKey, model: config.openAiCoachModel ?? 'gpt-4.1-mini' },
+    ];
+  }
+  const access = providerAccess(config);
+  return access ? [{ ...access, model: config.model }] : [];
 }
 
 /** The public view of the config; never includes keys. */
