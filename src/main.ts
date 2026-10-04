@@ -47,6 +47,16 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+function waitForClick(button: HTMLElement): Promise<void> {
+  button.hidden = false;
+  return new Promise((resolve) => {
+    button.addEventListener('click', () => {
+      button.hidden = true;
+      resolve();
+    }, { once: true });
+  });
+}
+
 async function main(): Promise<void> {
   const config = await getJson<Config>('/api/config');
   el('languages').textContent = `${config.practiceLanguage} practice, ${config.fallbackLanguage} fallback`;
@@ -54,6 +64,9 @@ async function main(): Promise<void> {
   const glasses = await Glasses.connect();
   const hud: Hud = glasses ?? new DomHud(el('hud'));
   log(glasses ? 'Even bridge found: using the G2' : 'No Even bridge: laptop microphone and on-page HUD');
+  // Browsers start audio only after a user gesture, so the laptop path waits
+  // for a click before opening the microphone.
+  if (!glasses) await waitForClick(el('start'));
 
   const coach = new Coach();
   const vad = new PauseDetector();

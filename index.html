@@ -10,12 +10,14 @@
       .muted { color: #999; font-size: 13px; }
       .box { border: 1px solid #333; border-radius: 6px; padding: 8px; margin: 10px 0; min-height: 1.4em; }
       #suggestion { border-color: #6c6; color: #9f9; }
+      #start { font: inherit; font-size: 18px; padding: 10px 18px; margin: 10px 0; }
       #log { font-family: ui-monospace, monospace; font-size: 12px; color: #aaa; max-height: 40vh; overflow: auto; }
     </style>
   </head>
   <body>
     <h1>Parley</h1>
     <div class="muted"><span id="languages"></span> &middot; phase: <span id="phase">idle</span></div>
+    <button id="start" type="button" hidden>Start microphone</button>
     <div id="hud"></div>
     <div class="muted">Transcript</div>
     <div id="transcript" class="box"></div>
