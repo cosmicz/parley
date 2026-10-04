@@ -1,13 +1,13 @@
 // The Parley dev-server API, mounted as Connect middleware by vite.config.ts.
 //
-// Every external dependency (fetch, the model client, the clock, the event hub)
-// is injected so tests drive the real routing over HTTP with fakes. Keys stay
-// in this process: responses carry only the public config, a single-use STT
-// key and model results.
+// Every external dependency (fetch, the clock, the event hub) is injected so
+// tests drive the real routing over HTTP with fakes. Keys stay in this
+// process: responses carry only the public config, a single-use STT key and
+// model results.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { publicConfig, type ServerConfig } from './config.ts';
-import { suggest, type MessagesClient } from './coach.ts';
+import { suggest } from './coach.ts';
 import { EventHub } from './events.ts';
 import type { SttTokenResponse, SuggestRequest, SuggestResponse } from './contract.ts';
 
@@ -17,9 +17,8 @@ export const MAX_BODY_BYTES = 64 * 1024;
 export interface ApiDeps {
   config: ServerConfig;
   hub: EventHub;
+  /** Used for Soniox and OpenRouter; tests inject a fake. */
   fetch?: typeof fetch;
-  /** Absent when no Anthropic key is configured. */
-  coachClient?: () => Promise<MessagesClient>;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -80,14 +79,13 @@ export function createApi(deps: ApiDeps): Middleware {
     '/api/suggest': {
       POST: async (req, res) => {
         const input = parseSuggestRequest(await readJson(req));
-        if (!deps.coachClient) throw new HttpError(503, 'ANTHROPIC_API_KEY is not configured');
+        const apiKey = deps.config.openRouterApiKey;
+        if (!apiKey) throw new HttpError(503, 'OPENROUTER_API_KEY is not configured');
         let response: SuggestResponse;
         try {
-          const client = await deps.coachClient();
           response = await suggest(
-            client,
+            { apiKey, fetch: fetchImpl, now: deps.now },
             { ...input, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage, model: deps.config.model },
-            deps.now,
           );
         } catch (err) {
           log(`model call failed: ${errorMessage(err)}`);

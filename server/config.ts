@@ -6,7 +6,7 @@ import type { ConfigResponse } from './contract.ts';
 
 export interface ServerConfig extends ConfigResponse {
   sonioxApiKey?: string;
-  anthropicApiKey?: string;
+  openRouterApiKey?: string;
 }
 
 const nonEmpty = (value: string | undefined): string | undefined => {
@@ -18,9 +18,10 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
   return {
     practiceLanguage: nonEmpty(env.PRACTICE_LANGUAGE) ?? 'fr',
     fallbackLanguage: nonEmpty(env.FALLBACK_LANGUAGE) ?? 'en',
-    model: nonEmpty(env.COACH_MODEL) ?? 'claude-haiku-4-5',
+    // OpenRouter model id, listed in OpenRouter's public model list 2026-10-04 (pahax-6ws).
+    model: nonEmpty(env.COACH_MODEL) ?? 'anthropic/claude-haiku-4.5',
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
-    anthropicApiKey: nonEmpty(env.ANTHROPIC_API_KEY),
+    openRouterApiKey: nonEmpty(env.OPENROUTER_API_KEY),
   };
 }
 

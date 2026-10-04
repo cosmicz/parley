@@ -14,7 +14,6 @@
     "qr": "evenhub qr --url"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "@evenrealities/even_hub_sdk": "0.0.16"
   },
   "devDependencies": {
