@@ -1,0 +1,27 @@
+{
+  "name": "esl-coach",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Live ESL conversation coach for Even Realities G2: live transcript, pause-triggered English suggestion.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "simulate": "evenhub-simulator http://localhost:5173",
+    "qr": "evenhub qr --url"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@evenrealities/even_hub_sdk": "0.0.16"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "0.1.14",
+    "@evenrealities/evenhub-simulator": "0.9.5",
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "package_id": "com.cosmic.parley",
+  "edition": "202601",
+  "name": "Parley",
+  "version": "0.1.0",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.16",
+  "entrypoint": "index.html",
+  "permissions": [
+    { "name": "g2-microphone", "desc": "Hear the wearer to show a live transcript and suggest the next words" },
+    { "name": "network", "desc": "Stream speech to the transcription service and fetch suggestions", "whitelist": ["wss://stt-rt.soniox.com"] }
+  ],
+  "supported_languages": ["en", "fr"]
+}
