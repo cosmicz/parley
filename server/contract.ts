@@ -10,11 +10,15 @@ import type { SuggestResult, Trigger } from '../src/suggest-core.ts';
  */
 export type SttMode = 'soniox' | 'segments' | 'none';
 
+/** Who serves suggestions and clip transcription: OpenRouter is preferred. */
+export type Provider = 'openrouter' | 'openai' | 'none';
+
 /** GET /api/config */
 export interface ConfigResponse {
   practiceLanguage: string;
   fallbackLanguage: string;
   model: string;
+  provider: Provider;
   sttMode: SttMode;
 }
 

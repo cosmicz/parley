@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createApi, MAX_WAV_BYTES, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
+import { createApi, MAX_WAV_BYTES, NO_PROVIDER, SONIOX_TEMP_KEY_URL, type ApiDeps } from '../server/api.ts';
 import { readConfig, type ServerConfig } from '../server/config.ts';
 import { EventHub } from '../server/events.ts';
 
@@ -12,6 +12,7 @@ const CONFIG: ServerConfig = {
   practiceLanguage: 'fr',
   fallbackLanguage: 'en',
   model: 'anthropic/claude-haiku-4.5',
+  provider: 'openrouter',
   transcribeModel: 'openai/gpt-4o-mini-transcribe',
   sonioxApiKey: 'soniox-long-lived',
   openRouterApiKey: 'openrouter-long-lived',
@@ -74,10 +75,12 @@ test('config comes from the environment with defaults and never exposes keys', a
   assert.deepEqual(readConfig({ ANTHROPIC_API_KEY: 'retired' }), {
     practiceLanguage: 'fr',
     fallbackLanguage: 'en',
+    provider: 'none',
     model: 'anthropic/claude-haiku-4.5',
     transcribeModel: 'openai/gpt-4o-mini-transcribe',
     sonioxApiKey: undefined,
     openRouterApiKey: undefined,
+    openAiApiKey: undefined,
   });
   const config = readConfig({
     PRACTICE_LANGUAGE: 'es',
@@ -93,10 +96,26 @@ test('config comes from the environment with defaults and never exposes keys', a
   try {
     const res = await fetch(`${h.base}/api/config`);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { practiceLanguage: 'es', fallbackLanguage: 'ro', model: 'm', sttMode: 'soniox' });
+    assert.deepEqual(await res.json(), { practiceLanguage: 'es', fallbackLanguage: 'ro', model: 'm', provider: 'openrouter', sttMode: 'soniox' });
   } finally {
     await h.close();
   }
+});
+
+test('the provider is OpenRouter when its key is set, else OpenAI with OpenAI model ids, else none', () => {
+  const both = readConfig({ OPENROUTER_API_KEY: 'o', OPENAI_API_KEY: 'k' });
+  assert.equal(both.provider, 'openrouter');
+  assert.equal(both.model, 'anthropic/claude-haiku-4.5');
+
+  // The operator's .env at 14:27: an OpenRouter slug left in COACH_MODEL.
+  const openAi = readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'anthropic/claude-haiku-4.5', TRANSCRIBE_MODEL: 'openai/gpt-4o-mini-transcribe' });
+  assert.equal(openAi.provider, 'openai');
+  assert.equal(openAi.model, 'gpt-4.1-mini');
+  assert.equal(openAi.transcribeModel, 'gpt-4o-mini-transcribe');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1' }).model, 'gpt-4.1');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', COACH_MODEL: 'gpt-4.1', OPENAI_COACH_MODEL: 'gpt-4o' }).model, 'gpt-4o');
+  assert.equal(readConfig({ OPENAI_API_KEY: 'k', TRANSCRIBE_MODEL: 'gpt-4o-transcribe' }).transcribeModel, 'gpt-4o-transcribe');
+  assert.equal(readConfig({}).provider, 'none');
 });
 
 test('sttMode prefers Soniox streaming, falls back to OpenRouter clips, else none', async () => {
@@ -105,6 +124,7 @@ test('sttMode prefers Soniox streaming, falls back to OpenRouter clips, else non
     [{ openRouterApiKey: undefined }, 'soniox'],
     [{ sonioxApiKey: undefined }, 'segments'],
     [{ sonioxApiKey: undefined, openRouterApiKey: undefined }, 'none'],
+    [{ sonioxApiKey: undefined, openRouterApiKey: undefined, provider: 'openai', openAiApiKey: 'k' }, 'segments'],
   ];
   for (const [override, expected] of cases) {
     const h = await serve({ config: { ...CONFIG, ...override } });
@@ -234,7 +254,7 @@ test('suggest rejects a bad body and reports a missing key without calling OpenR
   try {
     const { status, body } = await postSuggest(noKey.base);
     assert.equal(status, 503);
-    assert.equal(body.error, 'OPENROUTER_API_KEY is not configured');
+    assert.equal(body.error, NO_PROVIDER);
   } finally {
     await noKey.close();
   }
@@ -292,6 +312,8 @@ function fakeTranscriber(reply: unknown, status = 200): { fetch: typeof fetch; c
   return { fetch: fakeFetch, calls };
 }
 
+const HINT = 'Mostly French with occasional English words; write each word in the language spoken; keep fillers like euh and um.';
+
 const postWav = (base: string, body: Uint8Array, type = 'audio/wav') =>
   fetch(`${base}/api/transcribe`, { method: 'POST', headers: { 'Content-Type': type }, body: new Blob([body as Uint8Array<ArrayBuffer>]) });
 
@@ -313,7 +335,7 @@ test('transcribe sends the clip to OpenRouter as base64 JSON with a mixed-langua
     assert.equal(call.body.input_audio.format, 'wav');
     assert.ok(Buffer.from(call.body.input_audio.data, 'base64').equals(clip), 'clip bytes survive the base64 round trip');
     assert.ok(!('language' in call.body), 'language must be auto-detected so slips survive');
-    const hint = 'Mostly French with occasional English words. Write each word in the language it was spoken in. Keep fillers such as "euh" and "um".';
+    const hint = HINT;
     assert.deepEqual(call.body.provider, { options: { openai: { prompt: hint }, groq: { prompt: hint } } });
   } finally {
     await h.close();
@@ -342,7 +364,7 @@ test('transcribe without an OpenRouter key answers 503 and never calls upstream'
   try {
     const res = await postWav(h.base, wav(100));
     assert.equal(res.status, 503);
-    assert.equal((await res.json()).error, 'OPENROUTER_API_KEY is not configured');
+    assert.equal((await res.json()).error, NO_PROVIDER);
     assert.equal(stt.calls.length, 0);
   } finally {
     await h.close();
@@ -367,6 +389,85 @@ test('transcribe maps HTTP errors, a missing text field and network failures to 
     } finally {
       await h.close();
     }
+  }
+});
+
+const OPENAI_CONFIG: ServerConfig = {
+  ...CONFIG,
+  provider: 'openai',
+  model: 'gpt-4.1-mini',
+  transcribeModel: 'gpt-4o-mini-transcribe',
+  sonioxApiKey: undefined,
+  openRouterApiKey: undefined,
+  openAiApiKey: 'openai-long-lived',
+};
+
+test('with only an OpenAI key, suggest calls OpenAI chat completions with max_completion_tokens', async () => {
+  const router = fakeOpenRouter(completion('{"suggestion": "un rendez-vous"}'));
+  const h = await serve({ config: OPENAI_CONFIG, fetch: router.fetch });
+  try {
+    const { status, body } = await postSuggest(h.base);
+    assert.equal(status, 200);
+    assert.deepEqual(body.result, { kind: 'suggestion', text: 'un rendez-vous' });
+    const call = router.calls[0];
+    assert.equal(call.url, 'https://api.openai.com/v1/chat/completions');
+    assert.equal(call.headers.Authorization, 'Bearer openai-long-lived');
+    assert.equal(call.body.model, 'gpt-4.1-mini');
+    assert.equal(call.body.max_completion_tokens, 256);
+    assert.ok(!Object.hasOwn(call.body, 'max_tokens'), 'OpenAI takes max_completion_tokens');
+    assert.deepEqual(call.body.messages.map((m) => m.role), ['system', 'user']);
+  } finally {
+    await h.close();
+  }
+});
+
+test('an OpenAI refusal maps to abstain and an OpenAI error to 502 without the key', async () => {
+  const refusal = await serve({ config: OPENAI_CONFIG, fetch: fakeOpenRouter(completion(null, 'stop', { message: { role: 'assistant', content: null, refusal: 'I cannot help.' } })).fetch });
+  try {
+    const { status, body } = await postSuggest(refusal.base);
+    assert.equal(status, 200);
+    assert.deepEqual(body.result, { kind: 'abstain' });
+  } finally {
+    await refusal.close();
+  }
+  const failing = await serve({ config: OPENAI_CONFIG, fetch: fakeOpenRouter({ error: { message: 'Incorrect API key provided', type: 'invalid_request_error' } }, 401).fetch });
+  try {
+    const res = await fetch(`${failing.base}/api/suggest`, { method: 'POST', body: JSON.stringify({ transcript: 'x', trigger: 'tap' }) });
+    const text = await res.text();
+    assert.equal(res.status, 502);
+    assert.match(JSON.parse(text).error, /OpenAI answered 401: Incorrect API key provided/);
+    assert.ok(!text.includes('openai-long-lived'));
+  } finally {
+    await failing.close();
+  }
+});
+
+test('with only an OpenAI key, transcribe posts multipart form data with the prompt and no language', async () => {
+  const calls: { url: string; headers: Record<string, string>; form: FormData }[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    calls.push({ url, headers: init.headers as Record<string, string>, form: init.body as FormData });
+    return new Response(JSON.stringify({ text: 'Je voudrais um appointment' }), { status: 200 });
+  }) as typeof fetch;
+  const h = await serve({ config: OPENAI_CONFIG, fetch: fakeFetch });
+  try {
+    const clip = wav(800);
+    const res = await postWav(h.base, clip);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).text, 'Je voudrais um appointment');
+    const call = calls[0];
+    assert.equal(call.url, 'https://api.openai.com/v1/audio/transcriptions');
+    assert.deepEqual(call.headers, { Authorization: 'Bearer openai-long-lived' }, 'fetch must set the multipart boundary');
+    assert.ok(call.form instanceof FormData);
+    const file = call.form.get('file') as File;
+    assert.equal(file.name, 'clip.wav');
+    assert.equal(file.type, 'audio/wav');
+    assert.ok(Buffer.from(await file.arrayBuffer()).equals(clip), 'clip bytes are uploaded unchanged');
+    assert.equal(call.form.get('model'), 'gpt-4o-mini-transcribe');
+    assert.equal(call.form.get('response_format'), 'json');
+    assert.equal(call.form.get('prompt'), HINT);
+    assert.equal(call.form.get('language'), null, 'language must be auto-detected so slips survive');
+  } finally {
+    await h.close();
   }
 });
 

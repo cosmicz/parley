@@ -1,8 +1,10 @@
-// Clip transcription through OpenRouter, for setups without a Soniox account:
-// the phone cuts speech segments into WAV clips and posts them here.
+// Clip transcription for setups without a Soniox account: the phone cuts
+// speech segments into WAV clips and posts them here.
 //
-// Request format per https://openrouter.ai/docs/guides/overview/multimodal/stt
+// OpenRouter, per https://openrouter.ai/docs/guides/overview/multimodal/stt
 // (checked 2026-10-04): JSON { model, input_audio: { data: base64, format } }.
+// OpenAI directly: multipart form data with file, model, response_format and
+// prompt, built with the global FormData and Blob.
 //
 // No `language`: forcing the practice language biases the model to render the
 // wearer's slips into their stronger language in the practice language, or to
@@ -14,9 +16,13 @@
 // default model) and Groq (the docs' Whisper example).
 
 import { languageName } from '../src/suggest-core.ts';
+import { providerLabel } from './coach.ts';
+import type { ProviderAccess } from './config.ts';
+import { OPENAI_API, openAiHeaders } from './openai.ts';
 import { OPENROUTER_API, openRouterHeaders, upstreamErrorText } from './openrouter.ts';
 
 export const OPENROUTER_TRANSCRIBE_URL = `${OPENROUTER_API}/audio/transcriptions`;
+export const OPENAI_TRANSCRIBE_URL = `${OPENAI_API}/audio/transcriptions`;
 export const TRANSCRIBE_TIMEOUT_MS = 15_000;
 
 /** Upstream failure; the message is safe to return to the client (no key). */
@@ -31,15 +37,10 @@ export interface TranscribeCall {
 }
 
 export function transcriptionHint(practiceLanguage: string, fallbackLanguage: string): string {
-  return [
-    `Mostly ${languageName(practiceLanguage)} with occasional ${languageName(fallbackLanguage)} words.`,
-    'Write each word in the language it was spoken in.',
-    'Keep fillers such as "euh" and "um".',
-  ].join(' ');
+  return `Mostly ${languageName(practiceLanguage)} with occasional ${languageName(fallbackLanguage)} words; write each word in the language spoken; keep fillers like euh and um.`;
 }
 
-export interface TranscribeAccess {
-  apiKey: string;
+export interface TranscribeAccess extends ProviderAccess {
   fetch: typeof fetch;
   now?: () => number;
 }
@@ -50,25 +51,40 @@ export async function transcribe(access: TranscribeAccess, call: TranscribeCall)
   const started = now();
   let response: Response;
   try {
-    response = await access.fetch(OPENROUTER_TRANSCRIBE_URL, {
-      method: 'POST',
-      headers: openRouterHeaders(access.apiKey),
-      body: JSON.stringify({
-        model: call.model,
-        input_audio: { data: Buffer.from(call.wav).toString('base64'), format: 'wav' },
-        provider: { options: { openai: { prompt: hint }, groq: { prompt: hint } } },
-      }),
-      signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
-    });
+    response = await access.fetch(
+      access.provider === 'openai' ? OPENAI_TRANSCRIBE_URL : OPENROUTER_TRANSCRIBE_URL,
+      access.provider === 'openai'
+        ? { method: 'POST', headers: openAiHeaders(access.apiKey, false), body: openAiForm(call, hint), signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS) }
+        : {
+            method: 'POST',
+            headers: openRouterHeaders(access.apiKey),
+            body: JSON.stringify({
+              model: call.model,
+              input_audio: { data: Buffer.from(call.wav).toString('base64'), format: 'wav' },
+              provider: { options: { openai: { prompt: hint }, groq: { prompt: hint } } },
+            }),
+            signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
+          },
+    );
   } catch (err) {
     throw new TranscribeError(`request failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   const body: unknown = await response.json().catch(() => null);
   const sttMs = Math.round(now() - started);
-  if (!response.ok) throw new TranscribeError(`OpenRouter answered ${response.status}: ${upstreamErrorText(body)}`);
+  if (!response.ok) throw new TranscribeError(`${providerLabel(access.provider)} answered ${response.status}: ${upstreamErrorText(body)}`);
   const text = (body as { text?: unknown } | null)?.text;
   if (typeof text !== 'string') throw new TranscribeError(`no text in response: ${upstreamErrorText(body)}`);
   return { text: text.trim(), sttMs };
+}
+
+// No language field, for the same reason as above.
+function openAiForm(call: TranscribeCall, hint: string): FormData {
+  const form = new FormData();
+  form.append('file', new Blob([call.wav as Uint8Array<ArrayBuffer>], { type: 'audio/wav' }), 'clip.wav');
+  form.append('model', call.model);
+  form.append('response_format', 'json');
+  form.append('prompt', hint);
+  return form;
 }
 
 /** RIFF/WAVE container check, so a client bug fails here rather than upstream. */

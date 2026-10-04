@@ -6,7 +6,7 @@
 // model results.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { publicConfig, type ServerConfig } from './config.ts';
+import { providerAccess, publicConfig, type ServerConfig } from './config.ts';
 import { suggest } from './coach.ts';
 import { isWav, transcribe } from './transcribe.ts';
 import { EventHub } from './events.ts';
@@ -14,6 +14,7 @@ import type { SttTokenResponse, SuggestRequest, SuggestResponse, TranscribeRespo
 
 export const SONIOX_TEMP_KEY_URL = 'https://api.soniox.com/v1/auth/temporary-api-key';
 export const MAX_BODY_BYTES = 64 * 1024;
+export const NO_PROVIDER = 'no model provider is configured: set OPENROUTER_API_KEY or OPENAI_API_KEY';
 export const MAX_WAV_BYTES = 1024 * 1024;
 const WAV_TYPES = new Set(['audio/wav', 'audio/wave', 'audio/x-wav']);
 
@@ -82,12 +83,12 @@ export function createApi(deps: ApiDeps): Middleware {
     '/api/suggest': {
       POST: async (req, res) => {
         const input = parseSuggestRequest(await readJson(req));
-        const apiKey = deps.config.openRouterApiKey;
-        if (!apiKey) throw new HttpError(503, 'OPENROUTER_API_KEY is not configured');
+        const access = providerAccess(deps.config);
+        if (!access) throw new HttpError(503, NO_PROVIDER);
         let response: SuggestResponse;
         try {
           response = await suggest(
-            { apiKey, fetch: fetchImpl, now: deps.now },
+            { ...access, fetch: fetchImpl, now: deps.now },
             { ...input, practiceLanguage: deps.config.practiceLanguage, fallbackLanguage: deps.config.fallbackLanguage, model: deps.config.model },
           );
         } catch (err) {
@@ -104,12 +105,12 @@ export function createApi(deps: ApiDeps): Middleware {
         if (!WAV_TYPES.has(type)) throw new HttpError(415, 'body must be audio/wav');
         const wav = await readBytes(req, MAX_WAV_BYTES);
         if (!isWav(wav)) throw new HttpError(400, 'body is not a RIFF/WAVE file');
-        const apiKey = deps.config.openRouterApiKey;
-        if (!apiKey) throw new HttpError(503, 'OPENROUTER_API_KEY is not configured');
+        const access = providerAccess(deps.config);
+        if (!access) throw new HttpError(503, NO_PROVIDER);
         let response: TranscribeResponse;
         try {
           response = await transcribe(
-            { apiKey, fetch: fetchImpl, now: deps.now },
+            { ...access, fetch: fetchImpl, now: deps.now },
             {
               wav,
               model: deps.config.transcribeModel,
