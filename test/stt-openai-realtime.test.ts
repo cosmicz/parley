@@ -146,3 +146,93 @@ test('events after stop are ignored', async () => {
   socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'late', transcript: 'stale' });
   assert.deepEqual(log.transcripts, []);
 });
+
+test('an older final cannot release the coach awaiting a newer flush', async () => {
+  const { stt, log } = harness();
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  const first = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  stt.sendPcm(pcm16([3, 4]));
+  const latest = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i2' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: 'Bonjour' });
+  await first;
+  assert.deepEqual(log.transcripts, [], 'old completion cannot trigger a hint for the newer utterance');
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i2', transcript: 'je voudrais un appointment' });
+  await latest;
+  assert.deepEqual(log.transcripts, ['Bonjour je voudrais un appointment']);
+});
+
+test('overlapping commits associate acknowledgements with their own flush in order', async () => {
+  const { stt, log } = harness(100);
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  let firstResolved = false;
+  const first = stt.flush().then(() => { firstResolved = true; });
+  stt.sendPcm(pcm16([3, 4]));
+  let latestResolved = false;
+  const latest = stt.flush().then(() => { latestResolved = true; });
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i2' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: 'Bonjour' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(firstResolved, true);
+  assert.equal(latestResolved, false, 'first item must not resolve the newer flush');
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i2', transcript: 'tout le monde' });
+  await Promise.all([first, latest]);
+  assert.deepEqual(log.transcripts, ['Bonjour tout le monde']);
+  assert.deepEqual(log.errors, []);
+});
+
+test('an older timeout cannot promote partials into a newer awaited transcript', async () => {
+  const { stt, log } = harness(40);
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  const first = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'i1', delta: 'Bonjour' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  stt.sendPcm(pcm16([3, 4]));
+  const latest = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i2' });
+  await first;
+  assert.deepEqual(log.transcripts, []);
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i2', transcript: 'je cherche la gare' });
+  await latest;
+  assert.deepEqual(log.transcripts, ['je cherche la gare']);
+});
+
+test('a final received before its commit acknowledgement is emitted once after the acknowledgement', async () => {
+  const { stt, log } = harness();
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  const flushed = stt.flush();
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: 'Bonjour' });
+  assert.deepEqual(log.transcripts, []);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  await flushed;
+  assert.deepEqual(log.transcripts, ['Bonjour']);
+});
+
+test('a late acknowledgement after timeout keeps the next commit associated correctly', async () => {
+  const { stt, log } = harness(30);
+  await stt.start();
+  const socket = FakeSocket.last!;
+  stt.sendPcm(pcm16([1, 2]));
+  await stt.flush(); // acknowledgement has not arrived
+  assert.deepEqual(log.errors, ['flush_timeout']);
+  stt.sendPcm(pcm16([3, 4]));
+  const latest = stt.flush();
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i1' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i1', transcript: 'Bonjour' });
+  assert.deepEqual(log.transcripts, []);
+  socket.emit({ type: 'input_audio_buffer.committed', item_id: 'i2' });
+  socket.emit({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'i2', transcript: 'ça va' });
+  await latest;
+  assert.deepEqual(log.transcripts, ['Bonjour ça va']);
+});
