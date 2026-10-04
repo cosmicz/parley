@@ -36,7 +36,8 @@ test('prompt puts repairing a recent fallback-language slip before continuing', 
   const repair = p.system.indexOf('First priority');
   const cont = p.system.indexOf('Otherwise');
   assert.ok(repair >= 0 && cont > repair, 'repair rule must come before the continuation rule');
-  assert.match(p.system, /English words? near the end/);
+  assert.match(p.system, /most recent English word or phrase/);
+  assert.match(p.system, /even when French words or fillers follow them/);
 });
 
 test('parses a suggestion', () => {
