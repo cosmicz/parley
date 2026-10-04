@@ -77,8 +77,8 @@ npm run simulate
 Suggestions and clip transcription use OpenRouter when `OPENROUTER_API_KEY`
 is set, otherwise OpenAI directly when `OPENAI_API_KEY` is set, all with plain
 `fetch`. Model defaults: on OpenRouter `anthropic/claude-haiku-4.5` and
-`openai/gpt-4o-mini-transcribe`; on OpenAI `gpt-4.1-mini` and
-`gpt-4o-mini-transcribe` (an OpenRouter slug in `COACH_MODEL` or
+`openai/gpt-4o-transcribe`; on OpenAI `gpt-4.1-mini` and
+`gpt-4o-transcribe` (an OpenRouter slug in `COACH_MODEL` or
 `TRANSCRIBE_MODEL` is ignored there). `/api/config` reports `provider`
 (`openrouter`, `openai` or `none`) and `sttMode`: `soniox` (streaming) when
 `SONIOX_API_KEY` is set, otherwise `realtime` when `REALTIME_STT=1` and

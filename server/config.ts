@@ -45,7 +45,9 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
       // Measured live 14:58 on a 3.6 s French clip: gpt-4o-transcribe 1.3-2.0 s and
       // accurate; gpt-4o-mini-transcribe 4.4-4.8 s; whisper-1 1.6-1.8 s but mangles fillers.
       ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-transcribe')
-      : (transcribeModel ?? 'openai/gpt-4o-mini-transcribe'),
+      // Live via OpenRouter 15:16: openai/gpt-4o-transcribe 1.2-2.0 s, accurate;
+      // openai/gpt-4o-mini-transcribe 2.3-2.8 s and turned "euh" into "you"/"U.".
+      : (transcribeModel ?? 'openai/gpt-4o-transcribe'),
     sonioxApiKey: nonEmpty(env.SONIOX_API_KEY),
     openRouterApiKey,
     openAiApiKey,
