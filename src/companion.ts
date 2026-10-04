@@ -5,8 +5,9 @@ const suggestion = document.querySelector<HTMLElement>('#suggestion');
 const phase = document.querySelector<HTMLElement>('#phase');
 const connection = document.querySelector<HTMLElement>('#connection');
 const latency = document.querySelector<HTMLElement>('#latency');
+const resetButton = document.querySelector<HTMLButtonElement>('#reset');
 
-if (!transcript || !suggestion || !phase || !connection || !latency) {
+if (!transcript || !suggestion || !phase || !connection || !latency || !resetButton) {
   throw new Error('Companion page is missing a required display element');
 }
 
@@ -19,8 +20,8 @@ function render(): void {
   suggestion!.classList.toggle('empty', !state.suggestion);
   phase!.textContent = state.phase;
   latency!.textContent = state.pauseToHudDispatchMs === null
-    ? 'Pause detected → HUD update dispatched: —'
-    : `Pause detected → HUD update dispatched: ${Math.round(state.pauseToHudDispatchMs)} ms`;
+    ? 'Pause start (or tap) → HUD update sent, app-side: —'
+    : `Pause start (or tap) → HUD update sent, app-side: ${Math.round(state.pauseToHudDispatchMs)} ms`;
 }
 
 function receive(event: MessageEvent): void {
@@ -44,3 +45,10 @@ events.onerror = () => {
   connection.textContent = 'Disconnected · reconnecting…';
   connection.dataset.state = 'disconnected';
 };
+
+// Reset clears the phone session and every projector page for a clean rerun.
+resetButton.addEventListener('click', () => {
+  fetch('/api/reset', { method: 'POST' }).catch(() => {
+    connection.textContent = 'Reset failed · check the dev server';
+  });
+});

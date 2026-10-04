@@ -21,13 +21,14 @@
       .empty { color: #81969d !important; font-style: italic; }
       .meta { display: flex; flex-wrap: wrap; gap: .5rem 2rem; }
       #connection[data-state="disconnected"] { color: #ffc49d; }
+      #reset { font: inherit; color: #f1f6f6; background: #24343e; border: 1px solid #40545c; border-radius: .5rem; padding: .25rem .9rem; cursor: pointer; }
     </style>
   </head>
   <body>
     <main>
       <header>
         <div><div class="eyebrow">French speaking practice</div><h1>Parley</h1></div>
-        <div class="meta"><span id="connection" data-state="connecting">Connecting…</span><span>Mode: <strong id="phase">idle</strong></span></div>
+        <div class="meta"><span id="connection" data-state="connecting">Connecting…</span><span>Mode: <strong id="phase">idle</strong></span><button id="reset" type="button">Reset</button></div>
       </header>
       <section class="panel" aria-labelledby="spoken-label">
         <h2 id="spoken-label">What you said</h2>
@@ -37,7 +38,7 @@
         <h2 id="proposal-label">Suggested French continuation</h2>
         <p id="suggestion" class="empty" aria-live="polite">A French continuation will appear after a pause.</p>
       </section>
-      <div id="latency" class="meta">Pause detected → HUD update dispatched: —</div>
+      <div id="latency" class="meta">Pause start (or tap) → HUD update sent, app-side: —</div>
     </main>
     <script type="module" src="/src/companion.ts"></script>
   </body>
