@@ -8,12 +8,12 @@
 // native_finish_reason, and a choice may carry an error even on HTTP 200.
 
 import { buildSuggestPrompt, parseSuggestion, type SuggestResult, type Trigger } from '../src/suggest-core.ts';
+import { OPENROUTER_API, openRouterHeaders, upstreamErrorText } from './openrouter.ts';
 
-export const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export const OPENROUTER_CHAT_URL = `${OPENROUTER_API}/chat/completions`;
 export const MAX_TOKENS = 256;
 // A suggestion later than this is useless on the HUD; fail fast instead.
 export const MODEL_TIMEOUT_MS = 10_000;
-const APP_TITLE = 'Parley';
 
 /** Upstream failure; the message is safe to return to the client (no key). */
 export class ModelCallError extends Error {}
@@ -40,11 +40,7 @@ export async function suggest(access: ModelAccess, call: SuggestCall): Promise<{
   try {
     response = await access.fetch(OPENROUTER_CHAT_URL, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${access.apiKey}`,
-        'Content-Type': 'application/json',
-        'X-OpenRouter-Title': APP_TITLE,
-      },
+      headers: openRouterHeaders(access.apiKey),
       body: JSON.stringify({
         model: call.model,
         messages: [
@@ -60,7 +56,7 @@ export async function suggest(access: ModelAccess, call: SuggestCall): Promise<{
   }
   const body: unknown = await response.json().catch(() => null);
   const modelMs = Math.round(now() - started);
-  if (!response.ok) throw new ModelCallError(`OpenRouter answered ${response.status}: ${errorText(body)}`);
+  if (!response.ok) throw new ModelCallError(`OpenRouter answered ${response.status}: ${upstreamErrorText(body)}`);
   return { result: interpret(body), modelMs };
 }
 
@@ -75,16 +71,11 @@ interface Completion {
 
 export function interpret(body: unknown): SuggestResult {
   const choice = (body as Completion | null)?.choices?.[0];
-  if (!choice) throw new ModelCallError(`no choices in response: ${errorText(body)}`);
+  if (!choice) throw new ModelCallError(`no choices in response: ${upstreamErrorText(body)}`);
   if (choice.error || choice.finish_reason === 'error') {
     throw new ModelCallError(`model error: ${choice.error?.message ?? 'unspecified'}`);
   }
   // A refusal or filtered reply carries no usable text; the HUD shows nothing.
   if (choice.finish_reason === 'content_filter' || choice.native_finish_reason === 'refusal') return { kind: 'abstain' };
   return parseSuggestion(choice.message?.content ?? '');
-}
-
-function errorText(body: unknown): string {
-  const message = (body as { error?: { message?: unknown } } | null)?.error?.message;
-  return typeof message === 'string' ? message : 'no error message';
 }

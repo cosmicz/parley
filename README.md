@@ -27,12 +27,13 @@ said, including the words you slipped into.
 
 ## Run it
 
-Requirements: Node 23, pnpm, a Soniox API key and an OpenRouter API key.
+Requirements: Node 23, pnpm and an OpenRouter API key. A Soniox API key is
+optional and enables streaming transcripts.
 
 ```bash
 cd app
 pnpm install --frozen-lockfile
-cp .env.example .env.local   # then fill in SONIOX_API_KEY and OPENROUTER_API_KEY
+cp .env.example .env.local   # then fill in OPENROUTER_API_KEY (and SONIOX_API_KEY)
 npm test                     # unit tests (node:test)
 npm run dev                  # Vite dev server on port 5173, reachable on the LAN
 ```
@@ -68,8 +69,13 @@ npm run simulate
 
 `.env.local` (never committed): `SONIOX_API_KEY`, `OPENROUTER_API_KEY`,
 `COACH_MODEL` (an OpenRouter model id, default `anthropic/claude-haiku-4.5`),
-`PRACTICE_LANGUAGE` (default `fr`), `FALLBACK_LANGUAGE` (default `en`).
-Suggestions go through OpenRouter's chat-completions API with plain `fetch`.
+`TRANSCRIBE_MODEL` (an OpenRouter transcription model, default
+`openai/gpt-4o-mini-transcribe`), `PRACTICE_LANGUAGE` (default `fr`),
+`FALLBACK_LANGUAGE` (default `en`). Suggestions go through OpenRouter's
+chat-completions API with plain `fetch`. `/api/config` reports `sttMode`:
+`soniox` (streaming) when `SONIOX_API_KEY` is set, otherwise `segments`
+(speech clips posted to `/api/transcribe` and transcribed through OpenRouter)
+when `OPENROUTER_API_KEY` is set, otherwise `none`.
 
 ## License
 
