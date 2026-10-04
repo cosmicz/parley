@@ -90,3 +90,39 @@ test('reset clears transcript, suggestion and latency', () => {
   c.reset();
   assert.deepEqual(c.state, { transcript: '', suggestion: null, phase: 'idle', pauseToHudDispatchMs: null });
 });
+
+// Clip transcription (no streaming STT): the transcript for an utterance only
+// exists after the pause, so the coach waits for it before asking.
+test('in transcript-wait mode a pause requests only after the clip transcript arrives', () => {
+  const c = new Coach({ waitForTranscript: true });
+  const atPause = c.onVad(pause, 10_000);
+  assert.deepEqual(types(atPause).filter((t) => t === 'request'), []);
+  assert.equal(c.state.phase, 'thinking');
+  const r = requestOf(c.onTranscript('Je voudrais un appointment'));
+  assert.equal(r.trigger, 'pause');
+  assert.equal(r.transcript, 'Je voudrais un appointment');
+  c.onSuggestion(r.seq, { kind: 'suggestion', text: 'un rendez-vous' });
+  c.onDispatched(r.seq, 12_000);
+  // Silence began at wall 9100 ms, so transcription time counts toward latency.
+  assert.equal(c.state.pauseToHudDispatchMs, 2900);
+});
+
+test('in transcript-wait mode speech resuming before the transcript cancels the request', () => {
+  const c = new Coach({ waitForTranscript: true });
+  c.onVad(pause, 10_000);
+  c.onVad(resume, 10_400);
+  assert.deepEqual(types(c.onTranscript('Je voudrais')).filter((t) => t === 'request'), []);
+});
+
+test('in transcript-wait mode a tap also waits for the transcript', () => {
+  const c = new Coach({ waitForTranscript: true });
+  assert.deepEqual(types(c.onHelp(10_000)).filter((t) => t === 'request'), []);
+  assert.equal(requestOf(c.onTranscript('Je cherche le')).trigger, 'tap');
+});
+
+test('in transcript-wait mode an empty transcript after a pause returns to listening', () => {
+  const c = new Coach({ waitForTranscript: true });
+  c.onVad(pause, 10_000);
+  assert.deepEqual(types(c.onTranscript('')).filter((t) => t === 'request'), []);
+  assert.equal(c.state.phase, 'idle');
+});

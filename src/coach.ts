@@ -27,14 +27,35 @@ export type CoachEffect =
 
 const initialState = (): CoachState => ({ transcript: '', suggestion: null, phase: 'idle', pauseToHudDispatchMs: null });
 
+export interface CoachOptions {
+  /**
+   * Clip transcription: the utterance's text arrives only after the pause, so
+   * a pause or tap waits for the next transcript before requesting.
+   */
+  waitForTranscript?: boolean;
+}
+
 export class Coach {
   state: CoachState = initialState();
   private seq = 0;
   private pending: { seq: number; startedAt: number } | null = null;
+  private awaiting: { trigger: Trigger; startedAt: number } | null = null;
+  private readonly waitForTranscript: boolean;
+
+  constructor(options: CoachOptions = {}) {
+    this.waitForTranscript = options.waitForTranscript ?? false;
+  }
 
   onTranscript(text: string): CoachEffect[] {
     this.state.transcript = text;
     if (this.state.phase === 'idle' && text.trim()) this.state.phase = 'listening';
+    if (this.awaiting) {
+      const { trigger, startedAt } = this.awaiting;
+      this.awaiting = null;
+      const effects = this.request(trigger, startedAt);
+      if (effects.length > 0) return effects;
+      this.state.phase = text.trim() ? 'listening' : 'idle';
+    }
     return [{ type: 'publish' }];
   }
 
@@ -43,11 +64,12 @@ export class Coach {
       // The pause fires after the silence threshold; date the request from the
       // moment the silence began.
       const silenceStartedAt = nowMs - (event.atMs - event.silenceStartedAtMs);
-      return this.request('pause', silenceStartedAt);
+      return this.waitForTranscript ? this.await('pause', silenceStartedAt) : this.request('pause', silenceStartedAt);
     }
-    // Speech started or resumed: anything pending is stale.
+    // Speech started or resumed: anything pending or awaited is stale.
     this.seq += 1;
     this.pending = null;
+    this.awaiting = null;
     const effects: CoachEffect[] = [];
     if (this.state.suggestion !== null) {
       this.state.suggestion = null;
@@ -59,7 +81,7 @@ export class Coach {
   }
 
   onHelp(nowMs: number): CoachEffect[] {
-    return this.request('tap', nowMs);
+    return this.waitForTranscript ? this.await('tap', nowMs) : this.request('tap', nowMs);
   }
 
   onSuggestion(seq: number, result: SuggestResult): CoachEffect[] {
@@ -84,8 +106,17 @@ export class Coach {
   reset(): CoachEffect[] {
     this.seq += 1;
     this.pending = null;
+    this.awaiting = null;
     this.state = initialState();
     return [{ type: 'show-suggestion', seq: null, text: '' }, { type: 'publish' }];
+  }
+
+  private await(trigger: Trigger, startedAt: number): CoachEffect[] {
+    this.seq += 1;
+    this.pending = null;
+    this.awaiting = { trigger, startedAt };
+    this.state.phase = 'thinking';
+    return [{ type: 'publish' }];
   }
 
   private request(trigger: Trigger, startedAt: number): CoachEffect[] {

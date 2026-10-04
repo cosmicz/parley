@@ -3,8 +3,8 @@
 A live conversation coach for Even Realities G2 glasses. You practise a
 language (French by default) and, when you stall or slip into your stronger
 language (English by default), the glasses show one short continuation in the
-language you are practising. The HUD also shows a live transcript of what you
-said, including the words you slipped into.
+language you are practising. The HUD also shows a transcript of what you said,
+including the words you slipped into, updated after each utterance.
 
 ## How it works
 
@@ -12,8 +12,10 @@ said, including the words you slipped into.
   page runs in the Even app's WebView.
 - A pause detector on the raw audio notices when you stop speaking for about
   900 ms. A temple tap asks for help at any time.
-- Soniox real-time speech-to-text produces the transcript, with French and
-  English language hints.
+- Speech-to-text: by default each utterance goes as one audio clip to
+  OpenRouter's transcription endpoint when you pause, so the transcript
+  updates per utterance, not word by word. With a Soniox key the app streams
+  to Soniox instead for a word-by-word transcript.
 - On a pause or a tap, the server asks a model through OpenRouter (Claude
   Haiku 4.5 by default) for one short continuation in
   the practised language, or an explicit abstain. The prompt instructs the
@@ -23,17 +25,17 @@ said, including the words you slipped into.
   speech.
 - A projector page (`/companion.html`) mirrors the app state for an audience,
   with the app-side time from the start of your pause to the HUD update being
-  sent.
+  sent. In clip mode that time includes transcribing the utterance.
 
 ## Run it
 
 Requirements: Node 23, pnpm and an OpenRouter or OpenAI API key. A Soniox
-API key is optional and enables streaming transcripts.
+API key is optional, for word-by-word transcripts.
 
 ```bash
 cd app
 pnpm install --frozen-lockfile
-cp .env.example .env.local   # then fill in OPENROUTER_API_KEY or OPENAI_API_KEY
+cp .env.example .env.local   # then fill in OPENROUTER_API_KEY or OPENAI_API_KEY (SONIOX_API_KEY optional)
 npm test                     # unit tests (node:test)
 npm run dev                  # Vite dev server on port 5173, reachable on the LAN
 ```
