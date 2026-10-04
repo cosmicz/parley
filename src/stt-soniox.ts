@@ -10,6 +10,8 @@ export interface SttOptions {
   model?: string;
   /** Shorter interval is useful for deterministic local transport tests. */
   keepaliveMs?: number;
+  /** Time to await the final server response after sending end-of-audio. */
+  stopTimeoutMs?: number;
 }
 
 export interface SttCallbacks {
@@ -22,6 +24,7 @@ export class SonioxStream {
   private socket: WebSocket | null = null;
   private readonly transcript = new TranscriptAssembler();
   private keepalive: ReturnType<typeof setInterval> | null = null;
+  private stopTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSentAt = 0;
   private pendingStop: (() => void) | null = null;
   private pendingStart: ((error: Error) => void) | null = null;
@@ -136,8 +139,15 @@ export class SonioxStream {
       return;
     }
     // Soniox sends remaining finals and `finished: true` after an empty frame.
-    socket.send(new Uint8Array());
     this.stopPromise = new Promise(resolve => { this.pendingStop = resolve; });
+    const timeoutMs = this.opts.stopTimeoutMs ?? 2_000;
+    this.stopTimer = setTimeout(() => {
+      if (this.socket !== socket || this.closed) return;
+      this.cb.onError({ type: 'finish_timeout', message: `Soniox did not finish within ${timeoutMs} ms` });
+      socket.close();
+      this.markClosed();
+    }, timeoutMs);
+    socket.send(new Uint8Array());
     return this.stopPromise;
   }
 
@@ -169,6 +179,8 @@ export class SonioxStream {
     if (this.closed) return;
     this.closed = true;
     this.clearKeepalive();
+    if (this.stopTimer !== null) clearTimeout(this.stopTimer);
+    this.stopTimer = null;
     this.pendingStart?.(startError);
     this.pendingStart = null;
     this.cb.onState('closed');

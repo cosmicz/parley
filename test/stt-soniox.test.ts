@@ -30,13 +30,13 @@ class FakeWebSocket {
   close(): void { this.emit('close'); }
 }
 
-function setup(keepaliveMs = 10_000) {
+function setup(keepaliveMs = 10_000, stopTimeoutMs = 2_000) {
   FakeWebSocket.instances = [];
   const transcripts: string[] = [];
   const errors: { type: string; message: string }[] = [];
   const states: string[] = [];
   const stream = new SonioxStream(
-    { getTempKey: async () => 'short-lived', languageHints: ['fr', 'en'], keepaliveMs },
+    { getTempKey: async () => 'short-lived', languageHints: ['fr', 'en'], keepaliveMs, stopTimeoutMs },
     { onTranscript: text => transcripts.push(text), onError: err => errors.push(err), onState: state => states.push(state) },
     FakeWebSocket as unknown as typeof WebSocket,
   );
@@ -162,4 +162,17 @@ test('stop during WebSocket connection rejects start before asynchronous browser
   await rejection;
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(states, ['connecting', 'closed']);
+});
+
+test('stop closes a stalled server after bounded wait and releases caller', async () => {
+  const { stream, states, errors } = setup(10_000, 15);
+  const started = stream.start();
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = FakeWebSocket.instances[0];
+  socket.emit('open');
+  await started;
+  await stream.stop(); // Fake server never emits finished or close.
+  assert.equal(socket.readyState, 3);
+  assert.equal(states.at(-1), 'closed');
+  assert.deepEqual(errors, [{ type: 'finish_timeout', message: 'Soniox did not finish within 15 ms' }]);
 });
