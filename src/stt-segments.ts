@@ -16,6 +16,7 @@ export class SegmentStt {
   private transcript = '';
   private queue: Promise<void> = Promise.resolve();
   private generation = 0;
+  private flushSeq = 0;
   private open = false;
   private readonly opts: SegmentSttOptions;
   private readonly cb: SttCallbacks;
@@ -69,10 +70,11 @@ export class SegmentStt {
     this.chunks = [];
     this.bufferedBytes = 0;
     const generation = this.generation;
+    const flushSeq = ++this.flushSeq;
     const work = async () => {
       if (generation !== this.generation || !this.open) return;
       if (pcm.byteLength < (this.opts.minSegmentMs ?? 300) * BYTES_PER_MS) {
-        this.cb.onTranscript(this.transcript);
+        if (flushSeq === this.flushSeq) this.cb.onTranscript(this.transcript);
         return;
       }
       try {
@@ -81,9 +83,13 @@ export class SegmentStt {
         if (text) this.transcript = this.transcript ? `${this.transcript} ${text}` : text;
       } catch (error) {
         if (generation !== this.generation || !this.open) return;
-        this.cb.onError({ type: 'transcribe', message: error instanceof Error ? error.message : String(error) });
+        if (flushSeq === this.flushSeq) {
+          this.cb.onError({ type: 'transcribe', message: error instanceof Error ? error.message : String(error) });
+        }
       }
-      this.cb.onTranscript(this.transcript);
+      // An older clip may finish after the coach starts awaiting a newer pause.
+      // Keep its words, but only the newest flush can release that wait.
+      if (flushSeq === this.flushSeq) this.cb.onTranscript(this.transcript);
     };
     this.queue = this.queue.then(work, work);
     return this.queue;
