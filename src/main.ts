@@ -135,6 +135,11 @@ async function main(): Promise<void> {
       hud.setTranscript(`[speech-to-text] ${err.message}`);
     },
     onState: (state) => log(`speech-to-text ${state}`),
+    // Streaming clients: show provisional words; only onTranscript can trigger.
+    onPartial: (text) => {
+      run(coach.onPartial(text));
+      hud.setTranscript(formatTranscript(text));
+    },
   };
   const stt: Stt = segmented
     ? new SegmentStt(

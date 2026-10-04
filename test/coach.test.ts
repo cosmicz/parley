@@ -126,3 +126,11 @@ test('in transcript-wait mode an empty transcript after a pause returns to liste
   assert.deepEqual(types(c.onTranscript('')).filter((t) => t === 'request'), []);
   assert.equal(c.state.phase, 'idle');
 });
+
+test('partial (streaming) text updates the transcript but never fulfils an awaited request', () => {
+  const c = new Coach({ waitForTranscript: true });
+  c.onVad(pause, 10_000);
+  assert.deepEqual(types(c.onPartial('Je voudrais un appoint')).filter((t) => t === 'request'), []);
+  assert.equal(c.state.transcript, 'Je voudrais un appoint');
+  assert.equal(requestOf(c.onTranscript('Je voudrais un appointment')).transcript, 'Je voudrais un appointment');
+});
