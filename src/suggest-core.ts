@@ -61,6 +61,7 @@ export function buildSuggestPrompt(input: SuggestInput): SuggestPrompt {
     `The wearer is practising ${practice} and is stronger in ${fallback}. The live transcript may mix in ${fallback} words, fillers such as "um", and speech-recognition errors.`,
     `Give ONE short ${practice} phrase for the wearer.`,
     `First priority: if the last sentence contains ${fallback} words, even when ${practice} words or fillers follow them, reply with the ${practice} for the most recent ${fallback} word or phrase, in the form that fits the sentence (for example the ${practice} noun with its article). Do not continue the sentence in that case.`,
+    `Translate ${fallback} words by meaning, not by sound, and beware false friends${input.fallbackLanguage === 'en' && input.practiceLanguage === 'fr' ? ' (for example "receipt" is "le reçu", not "la recette")' : ''}.`,
     `Otherwise, give the natural ${practice} continuation of their sentence.`,
     `At most 6 words and ${MAX_SUGGESTION_CHARS} characters. Do not invent names, times, places or reasons the wearer has not said.`,
     `If the transcript gives no basis for a continuation, reply with a neutral ${practice} bridge phrase (in English that would be "Let me put it another way"), or abstain.`,
@@ -70,18 +71,34 @@ export function buildSuggestPrompt(input: SuggestInput): SuggestPrompt {
   return { system, user };
 }
 
+function parseFirstJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // fall through to extraction
+  }
+  for (const match of [text.match(/\{[\s\S]*?\}/), text.match(/\{[\s\S]*\}/)]) {
+    if (!match) continue;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
+}
+
 export function parseSuggestion(raw: string): SuggestResult {
   const body = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '')
     .trim();
-  let value: unknown;
-  try {
-    value = JSON.parse(body);
-  } catch {
-    return { kind: 'invalid', reason: 'not JSON' };
-  }
+  // Models sometimes wrap the JSON in prose ("Here is the hint: {...}"), seen
+  // live in 2 of 12 real-voice hints (arc-7qwo 16:34). Accept the first JSON
+  // object in the reply; text without one is still rejected.
+  const value = parseFirstJsonObject(body);
+  if (value === undefined) return { kind: 'invalid', reason: 'not JSON' };
   if (typeof value !== 'object' || value === null) return { kind: 'invalid', reason: 'not an object' };
   const obj = value as Record<string, unknown>;
   if (obj.abstain === true) return { kind: 'abstain' };

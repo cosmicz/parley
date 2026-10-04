@@ -54,6 +54,21 @@ test('parses a suggestion wrapped in a json code fence', () => {
   });
 });
 
+test('extracts the JSON object when the model adds text around it', () => {
+  assert.deepEqual(parseSuggestion('Here is the hint: {"suggestion": "le reçu"} Hope it helps.'), { kind: 'suggestion', text: 'le reçu' });
+  assert.deepEqual(parseSuggestion('Sure!\n```json\n{"abstain": true}\n```'), { kind: 'abstain' });
+});
+
+test('still rejects plain text with no JSON object', () => {
+  assert.equal(parseSuggestion('le reçu').kind, 'invalid');
+  assert.equal(parseSuggestion('I cannot help with that.').kind, 'invalid');
+});
+
+test('prompt warns against false friends', () => {
+  const p = buildSuggestPrompt({ transcript: 'Je cherche le receipt', practiceLanguage: 'fr', fallbackLanguage: 'en', trigger: 'pause' });
+  assert.match(p.system, /by meaning, not by sound/);
+});
+
 test('parses an abstain', () => {
   assert.deepEqual(parseSuggestion('{"abstain": true}'), { kind: 'abstain' });
 });
