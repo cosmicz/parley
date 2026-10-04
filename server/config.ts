@@ -5,8 +5,13 @@
 import type { ConfigResponse, Provider, SttMode } from './contract.ts';
 
 export interface ServerConfig extends Omit<ConfigResponse, 'sttMode'> {
-  /** Model id for POST /api/transcribe, in the provider's own naming. */
+  /** Model id for POST /api/transcribe, in the transcription provider's naming. */
   transcribeModel: string;
+  /**
+   * Transcription prefers OpenAI direct whenever its key is set: live at 15:23
+   * the same clip took 7.7-8.2 s through OpenRouter vs 2.1 s direct (arc-7qwo).
+   */
+  transcribeProvider: Provider;
   sonioxApiKey?: string;
   openRouterApiKey?: string;
   openAiApiKey?: string;
@@ -32,6 +37,7 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
   const coachModel = nonEmpty(env.COACH_MODEL);
   const transcribeModel = nonEmpty(env.TRANSCRIBE_MODEL);
   const openAi = provider === 'openai';
+  const transcribeProvider: Provider = openAiApiKey ? 'openai' : provider;
   return {
     practiceLanguage: nonEmpty(env.PRACTICE_LANGUAGE) ?? 'fr',
     fallbackLanguage: nonEmpty(env.FALLBACK_LANGUAGE) ?? 'en',
@@ -41,7 +47,8 @@ export function readConfig(env: Record<string, string | undefined>): ServerConfi
     model: openAi
       ? (nonEmpty(env.OPENAI_COACH_MODEL) ?? (isOpenRouterSlug(coachModel) ? undefined : coachModel) ?? 'gpt-4.1-mini')
       : (coachModel ?? 'anthropic/claude-haiku-4.5'),
-    transcribeModel: openAi
+    transcribeProvider,
+    transcribeModel: transcribeProvider === 'openai'
       // Measured live 14:58 on a 3.6 s French clip: gpt-4o-transcribe 1.3-2.0 s and
       // accurate; gpt-4o-mini-transcribe 4.4-4.8 s; whisper-1 1.6-1.8 s but mangles fillers.
       ? ((isOpenRouterSlug(transcribeModel) ? undefined : transcribeModel) ?? 'gpt-4o-transcribe')
@@ -60,6 +67,12 @@ export function providerAccess(config: ServerConfig): ProviderAccess | null {
   if (config.provider === 'openrouter' && config.openRouterApiKey) return { provider: 'openrouter', apiKey: config.openRouterApiKey };
   if (config.provider === 'openai' && config.openAiApiKey) return { provider: 'openai', apiKey: config.openAiApiKey };
   return null;
+}
+
+/** Access for POST /api/transcribe: OpenAI direct when its key is set. */
+export function transcribeAccess(config: ServerConfig): ProviderAccess | null {
+  if (config.transcribeProvider === 'openai' && config.openAiApiKey) return { provider: 'openai', apiKey: config.openAiApiKey };
+  return providerAccess(config);
 }
 
 /** The public view of the config; never includes keys. */

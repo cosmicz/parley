@@ -13,6 +13,7 @@ const CONFIG: ServerConfig = {
   fallbackLanguage: 'en',
   model: 'anthropic/claude-haiku-4.5',
   provider: 'openrouter',
+  transcribeProvider: 'openrouter',
   transcribeModel: 'openai/gpt-4o-mini-transcribe',
   realtimeStt: false,
   sonioxApiKey: 'soniox-long-lived',
@@ -77,6 +78,7 @@ test('config comes from the environment with defaults and never exposes keys', a
     practiceLanguage: 'fr',
     fallbackLanguage: 'en',
     provider: 'none',
+    transcribeProvider: 'none',
     model: 'anthropic/claude-haiku-4.5',
     transcribeModel: 'openai/gpt-4o-transcribe',
     sonioxApiKey: undefined,
@@ -400,6 +402,7 @@ test('transcribe maps HTTP errors, a missing text field and network failures to 
 const OPENAI_CONFIG: ServerConfig = {
   ...CONFIG,
   provider: 'openai',
+  transcribeProvider: 'openai',
   model: 'gpt-4.1-mini',
   transcribeModel: 'gpt-4o-mini-transcribe',
   sonioxApiKey: undefined,
@@ -631,6 +634,26 @@ test('state must be a JSON object; unknown routes, wrong methods and non-API pat
     assert.equal(wrong.headers.get('allow'), 'POST');
     const passthrough = await fetch(`${h.base}/companion.html`);
     assert.equal(passthrough.status, 418, 'non-API requests fall through to Vite');
+  } finally {
+    await h.close();
+  }
+});
+
+test('with both keys, transcription goes to OpenAI direct while suggestions stay on OpenRouter', async () => {
+  const both = readConfig({ OPENROUTER_API_KEY: 'o', OPENAI_API_KEY: 'k' });
+  assert.equal(both.provider, 'openrouter');
+  assert.equal(both.transcribeProvider, 'openai');
+  assert.equal(both.transcribeModel, 'gpt-4o-transcribe');
+  const urls: string[] = [];
+  const fakeFetch = (async (url: string) => {
+    urls.push(url);
+    return new Response(JSON.stringify({ text: 'Je voudrais un appointment' }), { status: 200 });
+  }) as typeof fetch;
+  const h = await serve({ config: both, fetch: fakeFetch });
+  try {
+    const res = await postWav(h.base, wav(800));
+    assert.equal(res.status, 200);
+    assert.equal(urls[0], 'https://api.openai.com/v1/audio/transcriptions');
   } finally {
     await h.close();
   }

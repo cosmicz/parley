@@ -6,7 +6,7 @@
 // model results.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { providerAccess, publicConfig, type ServerConfig } from './config.ts';
+import { providerAccess, publicConfig, transcribeAccess, type ServerConfig } from './config.ts';
 import { suggest } from './coach.ts';
 import { isWav, transcribe } from './transcribe.ts';
 import { createRealtimeToken, REALTIME_MODEL, REALTIME_RATE } from './realtime.ts';
@@ -126,7 +126,7 @@ export function createApi(deps: ApiDeps): Middleware {
         if (!WAV_TYPES.has(type)) throw new HttpError(415, 'body must be audio/wav');
         const wav = await readBytes(req, MAX_WAV_BYTES);
         if (!isWav(wav)) throw new HttpError(400, 'body is not a RIFF/WAVE file');
-        const access = providerAccess(deps.config);
+        const access = transcribeAccess(deps.config);
         if (!access) throw new HttpError(503, NO_PROVIDER);
         let response: TranscribeResponse;
         try {
