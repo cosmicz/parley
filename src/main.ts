@@ -19,6 +19,7 @@ import { formatTranscript, formatSuggestion } from './hud-format.ts';
 import type { SuggestResult } from './suggest-core.ts';
 import { SonioxStream, type SttCallbacks } from './stt-soniox.ts';
 import { SegmentStt } from './stt-segments.ts';
+import { RealtimeStt } from './stt-openai-realtime.ts';
 
 /** The surface main uses; Glasses (G2) and DomHud (laptop) both provide it. */
 type Hud = Pick<Glasses, 'start' | 'setTranscript' | 'setSuggestion' | 'exitWithDialog' | 'stop'>;
@@ -28,7 +29,7 @@ interface Config {
   fallbackLanguage: string;
   model: string;
   /** soniox: streaming words; segments: one OpenRouter clip per utterance. */
-  sttMode: 'soniox' | 'segments' | 'none';
+  sttMode: 'soniox' | 'segments' | 'realtime' | 'none';
 }
 
 /** The speech-to-text surface main uses; flush exists only in clip mode. */
@@ -114,7 +115,9 @@ async function main(): Promise<void> {
     },
   };
 
-  const segmented = config.sttMode === 'segments';
+  // Clip and realtime modes both close an utterance on a pause (flush), and the
+  // coach waits for that utterance's final text before asking.
+  const segmented = config.sttMode === 'segments' || config.sttMode === 'realtime';
   if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENAI_API_KEY or OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env');
   log(`speech-to-text mode: ${config.sttMode}`);
   const coach = new Coach({ waitForTranscript: segmented });
@@ -176,7 +179,12 @@ async function main(): Promise<void> {
       hud.setTranscript(formatTranscript(text));
     },
   };
-  const stt: Stt = segmented
+  const stt: Stt = config.sttMode === 'realtime'
+    ? new RealtimeStt(
+        { getToken: async () => getJson<{ apiKey: string; sampleRate: number }>('/api/realtime-token') },
+        callbacks,
+      )
+    : segmented
     ? new SegmentStt(
         {
           transcribe: async (wav) => {
