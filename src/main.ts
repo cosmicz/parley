@@ -17,7 +17,8 @@ import { PauseDetector, pcmBytesToInt16 } from './vad.ts';
 import { Coach, type CoachEffect } from './coach.ts';
 import { formatTranscript, formatSuggestion } from './hud-format.ts';
 import type { SuggestResult } from './suggest-core.ts';
-import { SonioxStream } from './stt-soniox.ts';
+import { SonioxStream, type SttCallbacks } from './stt-soniox.ts';
+import { SegmentStt } from './stt-segments.ts';
 
 /** The surface main uses; Glasses (G2) and DomHud (laptop) both provide it. */
 type Hud = Pick<Glasses, 'start' | 'setTranscript' | 'setSuggestion' | 'exitWithDialog' | 'stop'>;
@@ -26,6 +27,16 @@ interface Config {
   practiceLanguage: string;
   fallbackLanguage: string;
   model: string;
+  /** soniox: streaming words; segments: one OpenRouter clip per utterance. */
+  sttMode: 'soniox' | 'segments' | 'none';
+}
+
+/** The speech-to-text surface main uses; flush exists only in clip mode. */
+interface Stt {
+  start(): Promise<void>;
+  sendPcm(bytes: Uint8Array): void;
+  stop(): Promise<void>;
+  flush?: () => Promise<void>;
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -68,7 +79,10 @@ async function main(): Promise<void> {
   // for a click before opening the microphone.
   if (!glasses) await waitForClick(el('start'));
 
-  const coach = new Coach();
+  const segmented = config.sttMode === 'segments';
+  if (config.sttMode === 'none') log('No speech-to-text key configured: set OPENROUTER_API_KEY (or SONIOX_API_KEY) in app/.env.local');
+  log(`speech-to-text mode: ${config.sttMode}`);
+  const coach = new Coach({ waitForTranscript: segmented });
   const vad = new PauseDetector();
 
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,30 +125,53 @@ async function main(): Promise<void> {
     if (seq !== null) run(coach.onDispatched(seq, performance.now()));
   }
 
-  const stt = new SonioxStream(
-    {
-      getTempKey: async () => (await getJson<{ apiKey: string }>('/api/stt-token')).apiKey,
-      languageHints: [config.practiceLanguage, config.fallbackLanguage],
+  const callbacks: SttCallbacks = {
+    onTranscript: (text) => {
+      run(coach.onTranscript(text));
+      hud.setTranscript(formatTranscript(text));
     },
-    {
-      onTranscript: (text) => {
-        run(coach.onTranscript(text));
-        hud.setTranscript(formatTranscript(text));
-      },
-      onError: (err) => {
-        log(`speech-to-text ${err.type}: ${err.message}`);
-        hud.setTranscript(`[speech-to-text] ${err.message}`);
-      },
-      onState: (state) => log(`speech-to-text ${state}`),
+    onError: (err) => {
+      log(`speech-to-text ${err.type}: ${err.message}`);
+      hud.setTranscript(`[speech-to-text] ${err.message}`);
     },
-  );
+    onState: (state) => log(`speech-to-text ${state}`),
+  };
+  const stt: Stt = segmented
+    ? new SegmentStt(
+        {
+          transcribe: async (wav) => {
+            const body = await getJson<{ text: string; sttMs: number }>('/api/transcribe', {
+              method: 'POST',
+              headers: { 'content-type': 'audio/wav' },
+              body: new Blob([wav as BlobPart], { type: 'audio/wav' }),
+            });
+            log(`transcribed in ${body.sttMs} ms: ${body.text}`);
+            return body.text;
+          },
+        },
+        callbacks,
+      )
+    : new SonioxStream(
+        {
+          getTempKey: async () => (await getJson<{ apiKey: string }>('/api/stt-token')).apiKey,
+          languageHints: [config.practiceLanguage, config.fallbackLanguage],
+        },
+        callbacks,
+      );
 
   await hud.start({
     onPcm: (bytes) => {
       stt.sendPcm(bytes);
-      for (const event of vad.push(pcmBytesToInt16(bytes))) run(coach.onVad(event, performance.now()));
+      for (const event of vad.push(pcmBytesToInt16(bytes))) {
+        run(coach.onVad(event, performance.now()));
+        // Clip mode: the pause closes the utterance; transcribe it now.
+        if (event.kind === 'pause') void stt.flush?.();
+      }
     },
-    onHelp: () => run(coach.onHelp(performance.now())),
+    onHelp: () => {
+      run(coach.onHelp(performance.now()));
+      void stt.flush?.();
+    },
     onDoubleTap: () => void hud.exitWithDialog(),
     onExit: () => {
       void stt.stop();
