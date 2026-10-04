@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Parley · companion</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #101820; color: #f1f6f6; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; padding: clamp(1.25rem, 4vw, 3rem); }
+      main { max-width: 900px; margin: auto; display: grid; gap: 1.5rem; }
+      header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 1rem; }
+      h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.5rem); letter-spacing: -.04em; }
+      h2 { margin: 0 0 1rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .18em; color: #9bc5c2; }
+      .eyebrow, .meta { color: #9fb2b7; font-size: .875rem; }
+      .eyebrow { text-transform: uppercase; letter-spacing: .2em; }
+      .panel { border: 1px solid #40545c; border-radius: 1rem; background: #17232c; padding: clamp(1.25rem, 3vw, 2rem); }
+      .spoken { min-height: 7rem; white-space: pre-wrap; font-size: clamp(1.3rem, 3vw, 2rem); line-height: 1.4; }
+      .proposal { border-left: .3rem solid #80dac4; padding-left: 1.25rem; color: #d8fff3; }
+      .proposal p { margin: 0; min-height: 2.5rem; font-size: clamp(1.2rem, 2.6vw, 1.8rem); line-height: 1.4; }
+      .empty { color: #81969d !important; font-style: italic; }
+      .meta { display: flex; flex-wrap: wrap; gap: .5rem 2rem; }
+      #connection[data-state="disconnected"] { color: #ffc49d; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><div class="eyebrow">French speaking practice</div><h1>Parley</h1></div>
+        <div class="meta"><span id="connection" data-state="connecting">Connecting…</span><span>Mode: <strong id="phase">idle</strong></span></div>
+      </header>
+      <section class="panel" aria-labelledby="spoken-label">
+        <h2 id="spoken-label">What you said</h2>
+        <div id="transcript" class="spoken empty" aria-live="polite">Waiting for speech…</div>
+      </section>
+      <section class="panel proposal" aria-labelledby="proposal-label">
+        <h2 id="proposal-label">Suggested French continuation</h2>
+        <p id="suggestion" class="empty" aria-live="polite">A French continuation will appear after a pause.</p>
+      </section>
+      <div id="latency" class="meta">Pause detected → HUD update dispatched: —</div>
+    </main>
+    <script type="module" src="/src/companion.ts"></script>
+  </body>
+</html>
