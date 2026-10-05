@@ -1,0 +1,10 @@
+# Dependencies and builds
+node_modules/
+dist/
+
+# Local credentials: keep keys out of Git (see .env.example)
+.env
+.env.*
+!.env.example
+
+.DS_Store
